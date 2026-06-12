@@ -38,9 +38,10 @@ type SSEEvent struct {
 }
 
 type Response struct {
-	StatusCode int
-	Body       []byte
-	Headers    map[string]string
+	StatusCode       int
+	Body             []byte
+	Headers          map[string]string
+	ReasoningContent string // extracted from upstream response for session preservation
 }
 
 type Translator interface {
