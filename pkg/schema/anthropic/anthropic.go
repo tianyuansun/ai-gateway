@@ -55,15 +55,17 @@ type MessageParam struct {
 
 // ContentBlockParam is a content block in a request message.
 type ContentBlockParam struct {
-	Type      string                `json:"type"`
-	Text      string                `json:"text,omitempty"`
-	Source    *ImageSource          `json:"source,omitempty"`
-	ID        string                `json:"id,omitempty"`
-	Name      string                `json:"name,omitempty"`
-	Input     json.RawMessage       `json:"input,omitempty"`
-	ToolUseID string                `json:"tool_use_id,omitempty"`
-	Content   string                `json:"content,omitempty"`
-	CacheControl *CacheControl      `json:"cache_control,omitempty"`
+	Type         string           `json:"type"`
+	Text         string           `json:"text,omitempty"`
+	Thinking     string           `json:"thinking,omitempty"`
+	Signature    string           `json:"signature,omitempty"`
+	Source       *ImageSource     `json:"source,omitempty"`
+	ID           string           `json:"id,omitempty"`
+	Name         string           `json:"name,omitempty"`
+	Input        json.RawMessage  `json:"input,omitempty"`
+	ToolUseID    string           `json:"tool_use_id,omitempty"`
+	Content      string           `json:"content,omitempty"`
+	CacheControl *CacheControl    `json:"cache_control,omitempty"`
 }
 
 // TextBlockParam is a text-only content block.
