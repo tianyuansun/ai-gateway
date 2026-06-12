@@ -1,0 +1,23 @@
+# Binary
+/bin/
+
+# Config (sensitive)
+config/gateway.e2e.yaml
+config/gateway.local.yaml
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Test coverage
+*.out
+*.test
+
+# Lint cache
+.cache/

@@ -1,0 +1,51 @@
+# Unit test configuration — committed to the repo.
+# All providers point to localhost mock servers so tests never hit real APIs.
+server:
+  listen: "127.0.0.1:0"
+  session:
+    ttl_seconds: 60
+    backend: memory
+    key_source: auto
+
+providers:
+  ds-official:
+    endpoints:
+      chat: "http://127.0.0.1:18080/v1"
+      anthropic: "http://127.0.0.1:18080/anthropic"
+    api_key_env: "DEEPSEEK_API_KEY"
+
+  anthropic-direct:
+    endpoints:
+      anthropic: "http://127.0.0.1:18081/v1"
+    api_key_env: "ANTHROPIC_API_KEY"
+
+models:
+  deepseek-v4-pro:
+    aliases: ["ds-pro"]
+    display_name: "DeepSeek V4 Pro"
+    capabilities:
+      context_window: 262144
+      max_output_tokens: 32768
+      supports_tools: true
+      supports_parallel_tool_calls: true
+      supports_vision: false
+      supports_reasoning: true
+      input_modalities: ["text"]
+    routing:
+      strategy: priority
+      affinity: session
+    providers:
+      - provider: ds-official
+        priority: 1
+
+  claude-opus-4-7:
+    display_name: "Claude Opus 4.7"
+    capabilities:
+      context_window: 200000
+      max_output_tokens: 32768
+      supports_tools: true
+      supports_vision: true
+      supports_reasoning: true
+    providers:
+      - provider: anthropic-direct
+        priority: 1

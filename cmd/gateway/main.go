@@ -13,6 +13,12 @@ import (
 	"github.com/tianyuansun/ai-gateway/pkg/ingress"
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 func main() {
 	configPath := flag.String("config", "gateway.yaml", "path to config file")
 	flag.Parse()
@@ -47,7 +53,8 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("AI Gateway listening on %s", cfg.Server.Listen)
+		log.Printf("AI Gateway %s (%s) built %s", version, commit, date)
+		log.Printf("listening on %s", cfg.Server.Listen)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("server error: %v", err)
 		}
