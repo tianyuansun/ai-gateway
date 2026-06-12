@@ -81,3 +81,163 @@ func TestE2E_RoutesToHealthyProvider(t *testing.T) {
 		t.Errorf("expected response from healthy provider, got id=%q", resp.ID)
 	}
 }
+
+func TestE2E_ChatCompletionsNonStreaming(t *testing.T) {
+	// Mock upstream returns Chat Completion JSON.
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hello from AI"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`))
+	}))
+	defer upstreamServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: "127.0.0.1:0"},
+		Providers: map[string]config.Provider{
+			"p1": {Endpoints: config.ProviderEndpoints{Chat: upstreamServer.URL}},
+		},
+		Models: map[string]config.Model{
+			"test-model": {
+				Routing: &config.RoutingConfig{Strategy: "priority"},
+				Providers: []config.ModelProvider{
+					{Provider: "p1", Priority: 1},
+				},
+			},
+		},
+	}
+
+	gw := NewGateway(cfg)
+	gw.health.SetHealth("p1", true)
+
+	body := `{"model":"test-model","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	gw.ServeChat(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	ct := rec.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("expected Content-Type application/json, got %q", ct)
+	}
+
+	var respBody map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &respBody); err != nil {
+		t.Fatalf("invalid response JSON: %v", err)
+	}
+	if _, ok := respBody["object"]; !ok {
+		t.Error("response body missing 'object' field")
+	}
+}
+
+func TestE2E_AnthropicMessagesNonStreaming(t *testing.T) {
+	// Mock upstream returns Anthropic Message JSON.
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"Hello from Claude"}],"usage":{"input_tokens":10,"output_tokens":5}}`))
+	}))
+	defer upstreamServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: "127.0.0.1:0"},
+		Providers: map[string]config.Provider{
+			"p1": {Endpoints: config.ProviderEndpoints{Anthropic: upstreamServer.URL}},
+		},
+		Models: map[string]config.Model{
+			"claude-sonnet-4-20250514": {
+				Routing: &config.RoutingConfig{Strategy: "priority"},
+				Providers: []config.ModelProvider{
+					{Provider: "p1", Priority: 1},
+				},
+			},
+		},
+	}
+
+	gw := NewGateway(cfg)
+	gw.health.SetHealth("p1", true)
+
+	body := `{"model":"claude-sonnet-4-20250514","messages":[{"role":"user","content":"hello"}],"max_tokens":100}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	gw.ServeMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var respBody map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &respBody); err != nil {
+		t.Fatalf("invalid response JSON: %v", err)
+	}
+	if _, ok := respBody["object"]; !ok {
+		t.Error("response body missing 'object' field")
+	}
+}
+
+func TestE2E_ResponsesAPINonStreaming(t *testing.T) {
+	// Mock upstream returns Anthropic SSE (ResToAnth translator forces stream:true).
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`event: message_start`,
+			`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude","usage":{"input_tokens":5}}}`,
+			``,
+			`event: content_block_delta`,
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}`,
+			``,
+			`event: message_stop`,
+			`data: {"type":"message_stop"}`,
+			``,
+		}
+		for _, chunk := range chunks {
+			w.Write([]byte(chunk + "\n"))
+			flusher.Flush()
+		}
+	}))
+	defer upstreamServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: "127.0.0.1:0"},
+		Providers: map[string]config.Provider{
+			"p1": {Endpoints: config.ProviderEndpoints{Anthropic: upstreamServer.URL}},
+		},
+		Models: map[string]config.Model{
+			"test-model": {
+				Routing: &config.RoutingConfig{Strategy: "priority"},
+				Providers: []config.ModelProvider{
+					{Provider: "p1", Priority: 1},
+				},
+			},
+		},
+	}
+
+	gw := NewGateway(cfg)
+	gw.health.SetHealth("p1", true)
+
+	body := `{"model":"test-model","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	gw.ServeResponses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var respBody map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &respBody); err != nil {
+		t.Fatalf("invalid response JSON: %v", err)
+	}
+
+	obj, ok := respBody["object"].(string)
+	if !ok || obj != "response" {
+		t.Errorf("expected object='response', got %v", respBody["object"])
+	}
+}
