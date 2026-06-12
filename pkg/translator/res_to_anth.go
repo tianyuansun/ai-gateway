@@ -44,36 +44,41 @@ func (t *ResToAnth) buildMessages(s *session.Session, body *ResponsesRequest) *A
 		req.Thinking = &ThinkingConfig{Type: "enabled", BudgetTokens: 16000}
 	}
 
-	for _, item := range body.Input {
-		switch item.Type {
-		case "message":
-			if item.Role == "system" || item.Role == "developer" {
-				req.System = item.extractText()
-			} else {
+	// Rebuild full history from session when available (mirrors ResToChat pattern).
+	if s != nil && len(s.Messages) > 0 {
+		req.Messages = sessionToAnthropicMessages(s.Messages)
+	} else {
+		for _, item := range body.Input {
+			switch item.Type {
+			case "message":
+				if item.Role == "system" || item.Role == "developer" {
+					req.System = item.extractText()
+				} else {
+					req.Messages = append(req.Messages, AnthropicMessage{
+						Role:    item.Role,
+						Content: []AnthropicContent{{Type: "text", Text: item.extractText()}},
+					})
+				}
+			case "function_call":
 				req.Messages = append(req.Messages, AnthropicMessage{
-					Role:    item.Role,
-					Content: []AnthropicContent{{Type: "text", Text: item.extractText()}},
+					Role: "assistant",
+					Content: []AnthropicContent{{
+						Type:  "tool_use",
+						ID:    item.CallID,
+						Name:  item.Name,
+						Input: parseJSON(item.Arguments),
+					}},
+				})
+			case "function_call_output":
+				req.Messages = append(req.Messages, AnthropicMessage{
+					Role: "user",
+					Content: []AnthropicContent{{
+						Type:        "tool_result",
+						ToolUseID:   item.CallID,
+						Content:     item.Output,
+					}},
 				})
 			}
-		case "function_call":
-			req.Messages = append(req.Messages, AnthropicMessage{
-				Role: "assistant",
-				Content: []AnthropicContent{{
-					Type:  "tool_use",
-					ID:    item.CallID,
-					Name:  item.Name,
-					Input: parseJSON(item.Arguments),
-				}},
-			})
-		case "function_call_output":
-			req.Messages = append(req.Messages, AnthropicMessage{
-				Role: "user",
-				Content: []AnthropicContent{{
-					Type:        "tool_result",
-					ToolUseID:   item.CallID,
-					Content:     item.Output,
-				}},
-			})
 		}
 	}
 
@@ -89,6 +94,43 @@ func (t *ResToAnth) buildMessages(s *session.Session, body *ResponsesRequest) *A
 	}
 
 	return req
+}
+
+func sessionToAnthropicMessages(msgs []session.Message) []AnthropicMessage {
+	var result []AnthropicMessage
+	for _, m := range msgs {
+		switch m.Role {
+		case "tool":
+			result = append(result, AnthropicMessage{
+				Role: "user",
+				Content: []AnthropicContent{{
+					Type:      "tool_result",
+					ToolUseID: m.ToolCallID,
+					Content:   m.Content,
+				}},
+			})
+		case "assistant":
+			var content []AnthropicContent
+			if m.Content != "" {
+				content = append(content, AnthropicContent{Type: "text", Text: m.Content})
+			}
+			for _, tc := range m.ToolCalls {
+				content = append(content, AnthropicContent{
+					Type:  "tool_use",
+					ID:    tc.ID,
+					Name:  tc.Function.Name,
+					Input: parseJSON(tc.Function.Arguments),
+				})
+			}
+			result = append(result, AnthropicMessage{Role: "assistant", Content: content})
+		default:
+			result = append(result, AnthropicMessage{
+				Role:    m.Role,
+				Content: []AnthropicContent{{Type: "text", Text: m.Content}},
+			})
+		}
+	}
+	return result
 }
 
 func parseJSON(s string) any {
