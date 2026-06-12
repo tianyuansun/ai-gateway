@@ -23,6 +23,7 @@ func (t *ChatToAnth) TranslateRequest(_ context.Context, req *Request, s *sessio
 	anthReq := &AnthropicRequest{
 		Model:     req.Model,
 		MaxTokens: 32768,
+		Stream:    true,
 	}
 
 	messages := []AnthropicMessage{}

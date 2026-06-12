@@ -51,6 +51,7 @@ func (t *AnthToChat) TranslateRequest(_ context.Context, req *Request, s *sessio
 	chatReq := ChatRequest{
 		Model:    req.Model,
 		Messages: messages,
+		Stream:   true,
 	}
 	if len(anthReq.Tools) > 0 {
 		chatReq.Tools = make([]Tool, len(anthReq.Tools))
