@@ -48,7 +48,7 @@ func (t *ResToAnth) buildMessages(s *session.Session, body *ResponsesRequest) *A
 
 	// Rebuild full history from session when available (mirrors ResToChat pattern).
 	if s != nil && len(s.Messages) > 0 {
-		req.Messages = sessionToAnthropicMessages(s.Messages)
+		req.Messages = sessionToAnthropicMessagesWithReasoning(s.Messages, s.ReasoningRecords)
 	} else {
 		for _, item := range body.Input {
 			switch item.Type {
@@ -98,7 +98,7 @@ func (t *ResToAnth) buildMessages(s *session.Session, body *ResponsesRequest) *A
 	return req
 }
 
-func sessionToAnthropicMessages(msgs []session.Message) []AnthropicMessage {
+func sessionToAnthropicMessagesWithReasoning(msgs []session.Message, reasoningRecords []session.Reasoning) []AnthropicMessage {
 	var result []AnthropicMessage
 	for _, m := range msgs {
 		switch m.Role {
@@ -130,6 +130,20 @@ func sessionToAnthropicMessages(msgs []session.Message) []AnthropicMessage {
 				Role:    m.Role,
 				Content: []AnthropicContent{{Type: "text", Text: m.Content}},
 			})
+		}
+	}
+	// Inject reasoning as thinking blocks into the last assistant message.
+	if len(reasoningRecords) > 0 {
+		for i := len(result) - 1; i >= 0; i-- {
+			if result[i].Role == "assistant" {
+				thinkingBlock := AnthropicContent{
+					Type:      "thinking",
+					Thinking:  reasoningRecords[len(reasoningRecords)-1].Content,
+					Signature: "",
+				}
+				result[i].Content = append([]AnthropicContent{thinkingBlock}, result[i].Content...)
+				break
+			}
 		}
 	}
 	return result
@@ -212,10 +226,17 @@ func (t *ResToAnth) TranslateResponse(_ context.Context, upstream *http.Response
 		return nil, err
 	}
 
+	reasoningContent := ""
+	for _, c := range anthResp.Content {
+		if c.Type == "thinking" && c.Thinking != "" {
+			reasoningContent += c.Thinking
+		}
+	}
+
 	resp := t.convertToResponse(&anthResp)
 
 	respBody, _ := json.Marshal(resp)
-	return &Response{StatusCode: 200, Body: respBody}, nil
+	return &Response{StatusCode: 200, Body: respBody, ReasoningContent: reasoningContent}, nil
 }
 
 func (t *ResToAnth) convertToResponse(anthResp *AnthropicResponse) *ResponsesResponse {
@@ -259,7 +280,13 @@ func (t *ResToAnth) convertUsage(u *AnthropicUsage) *Usage {
 	}
 }
 
-func (t *ResToAnth) UpdateSession(_ *session.Session, _ *Request, _ *Response) {}
+func (t *ResToAnth) UpdateSession(s *session.Session, _ *Request, resp *Response) {
+	if resp.ReasoningContent != "" {
+		s.ReasoningRecords = append(s.ReasoningRecords, session.Reasoning{
+			Content: resp.ReasoningContent,
+		})
+	}
+}
 
 // --- Anthropic types ---
 
@@ -280,6 +307,8 @@ type AnthropicMessage struct {
 type AnthropicContent struct {
 	Type      string `json:"type"`
 	Text      string `json:"text,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
 	ID        string `json:"id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Input     any    `json:"input,omitempty"`

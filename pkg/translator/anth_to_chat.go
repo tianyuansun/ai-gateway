@@ -153,9 +153,11 @@ func (t *AnthToChat) TranslateResponse(_ context.Context, upstream *http.Respons
 		return nil, err
 	}
 
+	reasoningContent := extractReasoningContent(body)
+
 	anthResp := t.convertToAnthropic(&chatResp)
 	respBody, _ := json.Marshal(anthResp)
-	return &Response{StatusCode: 200, Body: respBody}, nil
+	return &Response{StatusCode: 200, Body: respBody, ReasoningContent: reasoningContent}, nil
 }
 
 func (t *AnthToChat) convertToAnthropic(chatResp *ChatResponse) *AnthropicResponse {
@@ -187,4 +189,10 @@ func (t *AnthToChat) convertToAnthropic(chatResp *ChatResponse) *AnthropicRespon
 	}
 }
 
-func (t *AnthToChat) UpdateSession(_ *session.Session, _ *Request, _ *Response) {}
+func (t *AnthToChat) UpdateSession(s *session.Session, _ *Request, resp *Response) {
+	if resp.ReasoningContent != "" {
+		s.ReasoningRecords = append(s.ReasoningRecords, session.Reasoning{
+			Content: resp.ReasoningContent,
+		})
+	}
+}

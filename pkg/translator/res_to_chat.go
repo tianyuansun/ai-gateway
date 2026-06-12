@@ -101,6 +101,15 @@ func (t *ResToChat) sessionMessages(s *session.Session) []ChatMessage {
 			}
 		}
 	}
+	// Inject reasoning records into the last assistant message.
+	if len(s.ReasoningRecords) > 0 {
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == "assistant" {
+				msgs[i].ReasoningContent = s.ReasoningRecords[len(s.ReasoningRecords)-1].Content
+				break
+			}
+		}
+	}
 	return msgs
 }
 
@@ -173,6 +182,9 @@ func (t *ResToChat) TranslateResponse(_ context.Context, upstream *http.Response
 		return nil, err
 	}
 
+	// Extract reasoning_content from the raw JSON (not in ChatResponse struct).
+	reasoningContent := extractReasoningContent(body)
+
 	resp := t.convertToResponse(&chatResp)
 
 	if s != nil {
@@ -180,7 +192,25 @@ func (t *ResToChat) TranslateResponse(_ context.Context, upstream *http.Response
 	}
 
 	respBody, _ := json.Marshal(resp)
-	return &Response{StatusCode: 200, Body: respBody}, nil
+	return &Response{StatusCode: 200, Body: respBody, ReasoningContent: reasoningContent}, nil
+}
+
+// extractReasoningContent extracts reasoning_content from a Chat Completions response.
+func extractReasoningContent(body []byte) string {
+	var raw struct {
+		Choices []struct {
+			Message struct {
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return ""
+	}
+	if len(raw.Choices) > 0 {
+		return raw.Choices[0].Message.ReasoningContent
+	}
+	return ""
 }
 
 func (t *ResToChat) convertToResponse(chatResp *ChatResponse) *ResponsesResponse {
@@ -232,7 +262,13 @@ func (t *ResToChat) appendToSession(s *session.Session, chatResp *ChatResponse) 
 	}
 }
 
-func (t *ResToChat) UpdateSession(_ *session.Session, _ *Request, _ *Response) {}
+func (t *ResToChat) UpdateSession(s *session.Session, _ *Request, resp *Response) {
+	if resp.ReasoningContent != "" {
+		s.ReasoningRecords = append(s.ReasoningRecords, session.Reasoning{
+			Content: resp.ReasoningContent,
+		})
+	}
+}
 
 // --- Request/Response types ---
 
@@ -289,11 +325,12 @@ type ChatRequest struct {
 }
 
 type ChatMessage struct {
-	Role       string          `json:"role"`
-	Content    string          `json:"content,omitempty"`
-	ToolCalls  []ChatToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	Name       string          `json:"name,omitempty"`
+	Role             string          `json:"role"`
+	Content          string          `json:"content,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ToolCalls        []ChatToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	Name             string          `json:"name,omitempty"`
 }
 
 type ChatToolCall struct {

@@ -145,6 +145,13 @@ func (t *ChatToAnth) TranslateResponse(_ context.Context, upstream *http.Respons
 		return nil, err
 	}
 
+	reasoningContent := ""
+	for _, c := range anthResp.Content {
+		if c.Type == "thinking" && c.Thinking != "" {
+			reasoningContent += c.Thinking
+		}
+	}
+
 	msg := ChatMessage{Role: "assistant"}
 	for _, c := range anthResp.Content {
 		switch c.Type {
@@ -171,7 +178,13 @@ func (t *ChatToAnth) TranslateResponse(_ context.Context, upstream *http.Respons
 		},
 	}
 	respBody, _ := json.Marshal(chatResp)
-	return &Response{StatusCode: 200, Body: respBody}, nil
+	return &Response{StatusCode: 200, Body: respBody, ReasoningContent: reasoningContent}, nil
 }
 
-func (t *ChatToAnth) UpdateSession(_ *session.Session, _ *Request, _ *Response) {}
+func (t *ChatToAnth) UpdateSession(s *session.Session, _ *Request, resp *Response) {
+	if resp.ReasoningContent != "" {
+		s.ReasoningRecords = append(s.ReasoningRecords, session.Reasoning{
+			Content: resp.ReasoningContent,
+		})
+	}
+}
