@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/session"
+	"github.com/tianyuansun/ai-gateway/pkg/shared"
 )
 
 // ResToChat translates OpenAI Responses API requests to Chat Completions API.
@@ -107,8 +108,55 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 	ch := make(chan SSEEvent)
 	go func() {
 		defer close(ch)
-		data, _ := io.ReadAll(upstream)
-		ch <- SSEEvent{Data: data}
+		started := false
+		var responseID string
+		for sseEv := range shared.ParseSSE(upstream) {
+			if sseEv.Data == "[DONE]" {
+				ch <- SSEEvent{Event: "response.completed", Data: []byte("{}")}
+				continue
+			}
+
+			var chunk struct {
+				ID      string `json:"id"`
+				Choices []struct {
+					Delta struct {
+						Role    string `json:"role"`
+						Content string `json:"content"`
+					} `json:"delta"`
+					FinishReason *string `json:"finish_reason"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal([]byte(sseEv.Data), &chunk); err != nil {
+				continue
+			}
+			if chunk.ID != "" {
+				responseID = chunk.ID
+			}
+
+			if !started {
+				started = true
+				startData, _ := json.Marshal(map[string]string{"id": responseID})
+				ch <- SSEEvent{Event: "response.created", Data: startData}
+			}
+
+			for _, choice := range chunk.Choices {
+				if choice.Delta.Content != "" {
+					deltaData, _ := json.Marshal(map[string]string{"delta": choice.Delta.Content})
+					ch <- SSEEvent{Event: "response.output_text.delta", Data: deltaData}
+				}
+				if choice.FinishReason != nil {
+					completeData, _ := json.Marshal(map[string]any{
+						"id": responseID, "status": "completed",
+					})
+					ch <- SSEEvent{Event: "response.completed", Data: completeData}
+				}
+			}
+		}
+		// Final completed event if not already sent.
+		if started {
+			lastData, _ := json.Marshal(map[string]string{"id": responseID})
+			ch <- SSEEvent{Event: "response.completed", Data: lastData}
+		}
 	}()
 	return ch
 }

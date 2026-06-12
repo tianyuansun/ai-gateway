@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/session"
+	"github.com/tianyuansun/ai-gateway/pkg/shared"
 )
 
 // ResToAnth translates OpenAI Responses API requests to Anthropic Messages API.
@@ -144,8 +145,57 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 	ch := make(chan SSEEvent)
 	go func() {
 		defer close(ch)
-		data, _ := io.ReadAll(upstream)
-		ch <- SSEEvent{Data: data}
+		started := false
+		var responseID string
+		for sseEv := range shared.ParseSSE(upstream) {
+			var event struct {
+				Type    string `json:"type"`
+				Message struct {
+					ID    string `json:"id"`
+					Model string `json:"model"`
+					Usage struct {
+						InputTokens int `json:"input_tokens"`
+					} `json:"usage"`
+				} `json:"message"`
+				Delta struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"delta"`
+				Usage struct {
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			}
+			if err := json.Unmarshal([]byte(sseEv.Data), &event); err != nil {
+				continue
+			}
+
+			switch event.Type {
+			case "message_start":
+				responseID = event.Message.ID
+				startData, _ := json.Marshal(map[string]any{
+					"id":    responseID,
+					"model": event.Message.Model,
+				})
+				ch <- SSEEvent{Event: "response.created", Data: startData}
+				started = true
+
+			case "content_block_delta":
+				if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
+					deltaData, _ := json.Marshal(map[string]string{"delta": event.Delta.Text})
+					ch <- SSEEvent{Event: "response.output_text.delta", Data: deltaData}
+				}
+
+			case "message_stop":
+				completeData, _ := json.Marshal(map[string]any{
+					"id": responseID, "status": "completed",
+				})
+				ch <- SSEEvent{Event: "response.completed", Data: completeData}
+			}
+		}
+		if started {
+			lastData, _ := json.Marshal(map[string]string{"id": responseID})
+			ch <- SSEEvent{Event: "response.completed", Data: lastData}
+		}
 	}()
 	return ch
 }
