@@ -1,7 +1,11 @@
 package translator
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"testing"
 
 	"github.com/tianyuansun/ai-gateway/pkg/session"
@@ -78,4 +82,56 @@ func responsesRequest(t *testing.T, model, text string) []byte {
 		},
 	})
 	return b
+}
+
+func TestResToAnth_TranslateResponseReadsHTTPBody(t *testing.T) {
+	// Build a minimal Anthropic text response.
+	anthResp := AnthropicResponse{
+		ID:   "msg_1",
+		Type: "message",
+		Role: "assistant",
+		Content: []AnthropicContent{
+			{Type: "text", Text: "hello from anthropic"},
+		},
+		Usage: &AnthropicUsage{InputTokens: 10, OutputTokens: 5},
+	}
+	respBody, _ := json.Marshal(anthResp)
+
+	httpResp := &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(bytes.NewReader(respBody)),
+		Header: http.Header{
+			"Content-Type":   []string{"application/json"},
+			"X-Request-Id":   []string{"req-123"},
+		},
+	}
+
+	tr := &ResToAnth{}
+	req := &Request{
+		Model:     "ds-pro",
+		APIFormat: FormatResponses,
+	}
+
+	result, err := tr.TranslateResponse(context.Background(), httpResp, req, nil)
+	if err != nil {
+		t.Fatalf("TranslateResponse: %v", err)
+	}
+	if result.StatusCode != 200 {
+		t.Errorf("expected status 200, got %d", result.StatusCode)
+	}
+	if result.Body == nil {
+		t.Fatal("expected non-nil body")
+	}
+
+	// Verify it translated to Responses format.
+	var responsesResp ResponsesResponse
+	if err := json.Unmarshal(result.Body, &responsesResp); err != nil {
+		t.Fatalf("unmarshal result body: %v", err)
+	}
+	if responsesResp.ID != "msg_1" {
+		t.Errorf("expected ID msg_1, got %s", responsesResp.ID)
+	}
+	if responsesResp.Usage == nil || responsesResp.Usage.TotalTokens != 15 {
+		t.Errorf("expected total tokens 15, got %+v", responsesResp.Usage)
+	}
 }

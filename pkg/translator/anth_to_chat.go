@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
@@ -84,9 +85,15 @@ func (t *AnthToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *R
 	return ch
 }
 
-func (t *AnthToChat) TranslateResponse(_ context.Context, upstreamBody []byte, _ *Request, _ *session.Session) (*Response, error) {
+func (t *AnthToChat) TranslateResponse(_ context.Context, upstream *http.Response, _ *Request, _ *session.Session) (*Response, error) {
+	body, err := io.ReadAll(upstream.Body)
+	if err != nil {
+		return nil, err
+	}
+	upstream.Body.Close()
+
 	var chatResp ChatResponse
-	if err := json.Unmarshal(upstreamBody, &chatResp); err != nil {
+	if err := json.Unmarshal(body, &chatResp); err != nil {
 		return nil, err
 	}
 
