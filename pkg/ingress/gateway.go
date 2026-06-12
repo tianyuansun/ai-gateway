@@ -10,6 +10,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -81,13 +82,30 @@ func (gw *Gateway) Start() error {
 
 func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat translator.APIFormat) {
 	// Per-request buffered logging.
+	startTime := time.Now()
 	requestID := generateRequestID()
+	xDebug := r.Header.Get("X-Debug") == "true"
 	level := slog.LevelInfo
-	if r.Header.Get("X-Debug") == "true" {
+	if xDebug {
 		level = slog.LevelDebug
 	}
 	ctx, logBuf := logging.WithLogger(r.Context(), requestID, level)
-	defer logBuf.Discard()
+
+	var upstreamStatus int
+	var upstreamErr error
+	defer func() {
+		cfg := logging.FlushConfig{
+			Threshold: 5 * time.Second, // hardcoded for now; config in slice 4
+			XDebug:    xDebug,
+		}
+		latency := time.Since(startTime)
+		if cfg.ShouldFlush(latency, upstreamStatus, upstreamErr) {
+			logBuf.Flush(os.Stderr)
+		} else {
+			logBuf.Discard()
+		}
+	}()
+
 	logger := logging.LoggerFrom(ctx)
 
 	body, err := io.ReadAll(r.Body)
@@ -171,10 +189,12 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 
 	resp, err := gw.client.Call(ctx, baseURL, upReq.URL, apiKey, upReq.Body, upReq.Headers)
 	if err != nil {
+		upstreamErr = err
 		log.Printf("[gateway] upstream error: %v", err)
 		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	upstreamStatus = resp.StatusCode
 
 	if isStreamRequest(body) {
 		gw.handleStream(w, r, resp, tr, tReq, sess, sessionID, provID, canonicalName)
