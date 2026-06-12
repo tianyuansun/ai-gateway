@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/tianyuansun/ai-gateway/pkg/config"
+	"github.com/tianyuansun/ai-gateway/pkg/logging"
 	"github.com/tianyuansun/ai-gateway/pkg/provider"
 	"github.com/tianyuansun/ai-gateway/pkg/router"
 	"github.com/tianyuansun/ai-gateway/pkg/session"
@@ -78,6 +80,16 @@ func (gw *Gateway) Start() error {
 }
 
 func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat translator.APIFormat) {
+	// Per-request buffered logging.
+	requestID := generateRequestID()
+	level := slog.LevelInfo
+	if r.Header.Get("X-Debug") == "true" {
+		level = slog.LevelDebug
+	}
+	ctx, logBuf := logging.WithLogger(r.Context(), requestID, level)
+	defer logBuf.Discard()
+	logger := logging.LoggerFrom(ctx)
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
@@ -90,6 +102,15 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 		http.Error(w, "model not found in request", http.StatusBadRequest)
 		return
 	}
+
+	streamReq := isStreamRequest(body)
+	logger.Debug("request",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"model", modelName,
+		"stream", streamReq,
+		"body_size", len(body),
+	)
 
 	model, canonicalName, ok := gw.resolver.Resolve(modelName)
 	if !ok {
@@ -129,7 +150,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 		Headers:   flattenHeaders(r.Header),
 	}
 
-	upReq, err := tr.TranslateRequest(r.Context(), tReq, sess)
+	upReq, err := tr.TranslateRequest(ctx, tReq, sess)
 	if err != nil {
 		http.Error(w, "translate request: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -148,7 +169,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 
 	apiKey := gw.cfg.ProviderAPIKey(prov)
 
-	resp, err := gw.client.Call(r.Context(), baseURL, upReq.URL, apiKey, upReq.Body, upReq.Headers)
+	resp, err := gw.client.Call(ctx, baseURL, upReq.URL, apiKey, upReq.Body, upReq.Headers)
 	if err != nil {
 		log.Printf("[gateway] upstream error: %v", err)
 		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
@@ -333,6 +354,12 @@ func extractSessionID(r *http.Request, body []byte, apiFormat translator.APIForm
 
 func generateSessionID() string {
 	b := make([]byte, 16)
+	rand.Read(b)
+	return "gw-" + hex.EncodeToString(b)
+}
+
+func generateRequestID() string {
+	b := make([]byte, 8)
 	rand.Read(b)
 	return "gw-" + hex.EncodeToString(b)
 }
