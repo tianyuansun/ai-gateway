@@ -170,7 +170,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 		return
 	}
 
-	gwResp, err := tr.TranslateResponse(r.Context(), resp.Body, tReq, sess)
+	gwResp, err := tr.TranslateResponse(r.Context(), resp, tReq, sess)
 	if err != nil {
 		http.Error(w, "translate response: "+err.Error(), http.StatusInternalServerError)
 		return

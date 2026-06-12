@@ -3,6 +3,7 @@ package translator
 import (
 	"context"
 	"io"
+	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
@@ -44,7 +45,7 @@ type Response struct {
 type Translator interface {
 	TranslateRequest(ctx context.Context, req *Request, s *session.Session) (*UpstreamRequest, error)
 	TranslateStream(ctx context.Context, upstream io.Reader, req *Request, s *session.Session) <-chan SSEEvent
-	TranslateResponse(ctx context.Context, upstreamBody []byte, req *Request, s *session.Session) (*Response, error)
+	TranslateResponse(ctx context.Context, upstream *http.Response, req *Request, s *session.Session) (*Response, error)
 	UpdateSession(s *session.Session, req *Request, resp *Response)
 }
 
@@ -69,8 +70,13 @@ func (p *PassthroughTranslator) TranslateStream(_ context.Context, upstream io.R
 	return ch
 }
 
-func (p *PassthroughTranslator) TranslateResponse(_ context.Context, upstreamBody []byte, _ *Request, _ *session.Session) (*Response, error) {
-	return &Response{StatusCode: 200, Body: upstreamBody}, nil
+func (p *PassthroughTranslator) TranslateResponse(_ context.Context, upstream *http.Response, _ *Request, _ *session.Session) (*Response, error) {
+	body, err := io.ReadAll(upstream.Body)
+	if err != nil {
+		return nil, err
+	}
+	upstream.Body.Close()
+	return &Response{StatusCode: upstream.StatusCode, Body: body}, nil
 }
 
 func (p *PassthroughTranslator) UpdateSession(_ *session.Session, _ *Request, _ *Response) {}

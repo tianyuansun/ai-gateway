@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 )
@@ -19,16 +18,13 @@ func NewClient(timeout time.Duration) *Client {
 	}
 }
 
-type UpstreamResponse struct {
-	StatusCode int
-	Body       []byte
-	Headers    http.Header
-}
-
-func (c *Client) Call(ctx context.Context, baseURL, path, apiKey string, body []byte, headers map[string]string) (*UpstreamResponse, error) {
+// Call executes the upstream request and returns the raw *http.Response.
+// The caller is responsible for closing the response body (each translator
+// reads and closes it internally via TranslateResponse).
+func (c *Client) Call(ctx context.Context, baseURL, path, apiKey string, reqBody []byte, headers map[string]string) (*http.Response, error) {
 	url := baseURL + path
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -45,16 +41,5 @@ func (c *Client) Call(ctx context.Context, baseURL, path, apiKey string, body []
 	if err != nil {
 		return nil, fmt.Errorf("upstream call: %w", err)
 	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	return &UpstreamResponse{
-		StatusCode: resp.StatusCode,
-		Body:       respBody,
-		Headers:    resp.Header,
-	}, nil
+	return resp, nil
 }
