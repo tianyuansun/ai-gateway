@@ -77,21 +77,6 @@ func (gw *Gateway) Start() error {
 	return nil
 }
 
-// ServeResponses handles POST /v1/responses (Codex CLI)
-func (gw *Gateway) ServeResponses(w http.ResponseWriter, r *http.Request) {
-	gw.handleProxy(w, r, translator.FormatResponses)
-}
-
-// ServeChat handles POST /v1/chat/completions
-func (gw *Gateway) ServeChat(w http.ResponseWriter, r *http.Request) {
-	gw.handleProxy(w, r, translator.FormatChat)
-}
-
-// ServeMessages handles POST /v1/messages (Claude Code)
-func (gw *Gateway) ServeMessages(w http.ResponseWriter, r *http.Request) {
-	gw.handleProxy(w, r, translator.FormatAnthropic)
-}
-
 func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat translator.APIFormat) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
