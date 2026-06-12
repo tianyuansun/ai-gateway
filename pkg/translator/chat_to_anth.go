@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/session"
+	"github.com/tianyuansun/ai-gateway/pkg/shared"
 )
 
 // ChatToAnth translates Chat Completions API requests to Anthropic Messages API.
@@ -89,8 +90,45 @@ func (t *ChatToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *R
 	ch := make(chan SSEEvent)
 	go func() {
 		defer close(ch)
-		data, _ := io.ReadAll(upstream)
-		ch <- SSEEvent{Data: data}
+		var msgID string
+		for sseEv := range shared.ParseSSE(upstream) {
+			var event struct {
+				Type    string `json:"type"`
+				Message struct {
+					ID string `json:"id"`
+				} `json:"message"`
+				Delta struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"delta"`
+			}
+			if err := json.Unmarshal([]byte(sseEv.Data), &event); err != nil {
+				continue
+			}
+
+			switch event.Type {
+			case "message_start":
+				msgID = event.Message.ID
+
+			case "content_block_delta":
+				if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
+					chunkData, _ := json.Marshal(map[string]any{
+						"id":      msgID,
+						"object":  "chat.completion.chunk",
+						"choices": []map[string]any{{"index": 0, "delta": map[string]any{"content": event.Delta.Text}}},
+					})
+					ch <- SSEEvent{Data: chunkData}
+				}
+
+			case "message_stop":
+				doneData, _ := json.Marshal(map[string]any{
+					"id":      msgID,
+					"object":  "chat.completion.chunk",
+					"choices": []map[string]any{{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}},
+				})
+				ch <- SSEEvent{Data: doneData}
+			}
+		}
 	}()
 	return ch
 }

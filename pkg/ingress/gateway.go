@@ -170,7 +170,44 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 		return
 	}
 
-	gwResp, err := tr.TranslateResponse(r.Context(), resp, tReq, sess)
+	if isStreamRequest(body) {
+		gw.handleStream(w, r, resp, tr, tReq, sess, sessionID, provID, canonicalName)
+	} else {
+		gw.handleNonStream(w, r, resp, tr, tReq, sess, sessionID, provID, canonicalName)
+	}
+}
+
+func (gw *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream *http.Response, tr translator.Translator, tReq *translator.Request, sess *session.Session, sessionID, provID, canonicalName string) {
+	defer upstream.Body.Close()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Session-Id", sessionID)
+	w.WriteHeader(http.StatusOK)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return
+	}
+
+	for sseEv := range tr.TranslateStream(r.Context(), upstream.Body, tReq, sess) {
+		if sseEv.Event != "" {
+			fmt.Fprintf(w, "event: %s\n", sseEv.Event)
+		}
+		fmt.Fprintf(w, "data: %s\n\n", sseEv.Data)
+		flusher.Flush()
+	}
+
+	if sess != nil {
+		sess.ProviderID = provID
+		sess.ModelName = canonicalName
+		gw.sessions.Set(sess.ID, sess)
+	}
+}
+
+func (gw *Gateway) handleNonStream(w http.ResponseWriter, r *http.Request, upstream *http.Response, tr translator.Translator, tReq *translator.Request, sess *session.Session, sessionID, provID, canonicalName string) {
+	gwResp, err := tr.TranslateResponse(r.Context(), upstream, tReq, sess)
 	if err != nil {
 		http.Error(w, "translate response: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -187,6 +224,16 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(gwResp.StatusCode)
 	w.Write(gwResp.Body)
+}
+
+func isStreamRequest(body []byte) bool {
+	var data struct {
+		Stream bool `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return false
+	}
+	return data.Stream
 }
 
 func (gw *Gateway) resolveTranslator(apiFormat translator.APIFormat, prov *config.Provider) (translator.Translator, string) {

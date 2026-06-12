@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/session"
+	"github.com/tianyuansun/ai-gateway/pkg/shared"
 )
 
 // AnthToChat translates Anthropic Messages API requests to Chat Completions API.
@@ -79,8 +80,63 @@ func (t *AnthToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *R
 	ch := make(chan SSEEvent)
 	go func() {
 		defer close(ch)
-		data, _ := io.ReadAll(upstream)
-		ch <- SSEEvent{Data: data}
+		started := false
+		var msgID string
+		for sseEv := range shared.ParseSSE(upstream) {
+			if sseEv.Data == "[DONE]" {
+				ch <- SSEEvent{Event: "message_stop", Data: []byte(`{"type":"message_stop"}`)}
+				continue
+			}
+
+			var chunk struct {
+				ID      string `json:"id"`
+				Choices []struct {
+					Delta struct {
+						Role    string `json:"role"`
+						Content string `json:"content"`
+					} `json:"delta"`
+					FinishReason *string `json:"finish_reason"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal([]byte(sseEv.Data), &chunk); err != nil {
+				continue
+			}
+			if chunk.ID != "" {
+				msgID = chunk.ID
+			}
+
+			if !started && msgID != "" {
+				started = true
+				startData, _ := json.Marshal(map[string]any{
+					"type":    "message_start",
+					"message": map[string]any{"id": msgID, "type": "message", "role": "assistant"},
+				})
+				ch <- SSEEvent{Event: "message_start", Data: startData}
+
+				blockData, _ := json.Marshal(map[string]any{
+					"type":          "content_block_start",
+					"index":         0,
+					"content_block": map[string]any{"type": "text", "text": ""},
+				})
+				ch <- SSEEvent{Event: "content_block_start", Data: blockData}
+			}
+
+			for _, choice := range chunk.Choices {
+				if choice.Delta.Content != "" {
+					deltaData, _ := json.Marshal(map[string]any{
+						"type":  "content_block_delta",
+						"index": 0,
+						"delta": map[string]any{"type": "text_delta", "text": choice.Delta.Content},
+					})
+					ch <- SSEEvent{Event: "content_block_delta", Data: deltaData}
+				}
+				if choice.FinishReason != nil {
+					ch <- SSEEvent{Event: "content_block_stop", Data: []byte(`{"type":"content_block_stop","index":0}`)}
+					ch <- SSEEvent{Event: "message_delta", Data: []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`)}
+					ch <- SSEEvent{Event: "message_stop", Data: []byte(`{"type":"message_stop"}`)}
+				}
+			}
+		}
 	}()
 	return ch
 }

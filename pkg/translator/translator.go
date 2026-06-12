@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/session"
+	"github.com/tianyuansun/ai-gateway/pkg/shared"
 )
 
 type APIFormat string
@@ -64,8 +65,12 @@ func (p *PassthroughTranslator) TranslateStream(_ context.Context, upstream io.R
 	ch := make(chan SSEEvent)
 	go func() {
 		defer close(ch)
-		data, _ := io.ReadAll(upstream)
-		ch <- SSEEvent{Data: data}
+		for ev := range shared.ParseSSE(upstream) {
+			ch <- SSEEvent{
+				Event: ev.Event,
+				Data:  []byte(ev.Data),
+			}
+		}
 	}()
 	return ch
 }
