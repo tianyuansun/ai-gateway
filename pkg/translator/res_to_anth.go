@@ -156,10 +156,19 @@ func sessionToAnthropicMessagesWithReasoning(msgs []session.Message, reasoningRe
 	return result
 }
 
+// evt adds a monotonically increasing sequence number to an event map.
+func evt(seq *int64, m map[string]any) ([]byte, error) {
+	*seq++
+	m["sequence_number"] = *seq
+	b, err := json.Marshal(m)
+	return b, err
+}
+
 func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Request, _ *session.Session) <-chan SSEEvent {
 	ch := make(chan SSEEvent)
 	go func() {
 		defer close(ch)
+			seq := int64(0)
 		started := false
 		completed := false
 		itemStarted := false
@@ -194,19 +203,27 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 			switch event.Type {
 			case "message_start":
 				responseID = event.Message.ID
-				startData, _ := json.Marshal(map[string]any{
+				startData, _ := evt(&seq, map[string]any{
 					"type": "response.created",
 					"response": map[string]any{
 						"id": responseID, "object": "response",
 					},
 				})
 				ch <- SSEEvent{Event: "response.created", Data: startData}
+
+				inProgressData, _ := evt(&seq, map[string]any{
+					"type": "response.in_progress",
+					"response": map[string]any{
+						"id": responseID, "object": "response",
+					},
+				})
+				ch <- SSEEvent{Event: "response.in_progress", Data: inProgressData}
 				started = true
 
 			case "content_block_start":
 				if event.ContentBlock.Type == "text" && !itemStarted {
 					itemStarted = true
-					itemData, _ := json.Marshal(map[string]any{
+					itemData, _ := evt(&seq, map[string]any{
 						"type":         "response.output_item.added",
 						"output_index": 0,
 						"item": map[string]any{
@@ -218,7 +235,7 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 					})
 					ch <- SSEEvent{Event: "response.output_item.added", Data: itemData}
 
-					partData, _ := json.Marshal(map[string]any{
+					partData, _ := evt(&seq, map[string]any{
 						"type":          "response.content_part.added",
 						"item_id":       responseID + "_item",
 						"output_index":  0,
@@ -233,7 +250,7 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 
 			case "content_block_delta":
 				if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
-					deltaData, _ := json.Marshal(map[string]any{
+					deltaData, _ := evt(&seq, map[string]any{
 						"type":          "response.output_text.delta",
 						"item_id":       responseID + "_item",
 						"output_index":  0,
@@ -245,7 +262,7 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 
 			case "content_block_stop":
 				if itemStarted {
-					partDone, _ := json.Marshal(map[string]any{
+					partDone, _ := evt(&seq, map[string]any{
 						"type":          "response.content_part.done",
 						"item_id":       responseID + "_item",
 						"output_index":  0,
@@ -260,7 +277,7 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 
 			case "message_stop":
 				if itemStarted {
-					itemDone, _ := json.Marshal(map[string]any{
+					itemDone, _ := evt(&seq, map[string]any{
 						"type":         "response.output_item.done",
 						"output_index": 0,
 						"item": map[string]any{
@@ -273,7 +290,7 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 					ch <- SSEEvent{Event: "response.output_item.done", Data: itemDone}
 				}
 				completed = true
-				completeData, _ := json.Marshal(map[string]any{
+				completeData, _ := evt(&seq, map[string]any{
 					"type": "response.completed",
 					"response": map[string]any{
 						"id": responseID, "object": "response",
@@ -283,7 +300,7 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 			}
 		}
 		if started && !completed {
-			lastData, _ := json.Marshal(map[string]any{
+			lastData, _ := evt(&seq, map[string]any{
 				"type": "response.completed",
 				"response": map[string]any{
 					"id": responseID, "object": "response",
