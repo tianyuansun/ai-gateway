@@ -25,6 +25,7 @@ func (t *ResToChat) TranslateRequest(_ context.Context, req *Request, s *session
 	chatReq := ChatRequest{
 		Model:    req.Model,
 		Messages: messages,
+		Stream:   true,
 	}
 	if len(body.Tools) > 0 {
 		chatReq.Tools = body.Tools
@@ -118,10 +119,29 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 	go func() {
 		defer close(ch)
 		started := false
+		completed := false
+		itemStarted := false
 		var responseID string
 		for sseEv := range shared.ParseSSE(upstream) {
 			if sseEv.Data == "[DONE]" {
-				ch <- SSEEvent{Event: "response.completed", Data: []byte("{}")}
+				if itemStarted {
+					itemDone, _ := json.Marshal(map[string]any{
+						"type":         "response.output_item.done",
+						"output_index": 0,
+						"item": map[string]any{
+							"id": responseID + "_item", "type": "message", "role": "assistant", "status": "in_progress",
+						},
+					})
+					ch <- SSEEvent{Event: "response.output_item.done", Data: itemDone}
+				}
+				completed = true
+				completeData, _ := json.Marshal(map[string]any{
+					"type": "response.completed",
+					"response": map[string]any{
+						"id": responseID, "object": "response",
+					},
+				})
+				ch <- SSEEvent{Event: "response.completed", Data: completeData}
 				continue
 			}
 
@@ -144,26 +164,75 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 
 			if !started {
 				started = true
-				startData, _ := json.Marshal(map[string]string{"id": responseID})
+				startData, _ := json.Marshal(map[string]any{
+					"type": "response.created",
+					"response": map[string]any{
+						"id": responseID, "object": "response",
+					},
+				})
 				ch <- SSEEvent{Event: "response.created", Data: startData}
 			}
 
 			for _, choice := range chunk.Choices {
+				if choice.Delta.Content != "" && !itemStarted {
+					itemStarted = true
+					itemData, _ := json.Marshal(map[string]any{
+						"type":         "response.output_item.added",
+						"output_index": 0,
+						"item": map[string]any{
+							"id": responseID + "_item", "type": "message", "role": "assistant", "status": "in_progress",
+						},
+					})
+					ch <- SSEEvent{Event: "response.output_item.added", Data: itemData}
+					partData, _ := json.Marshal(map[string]any{
+						"type":          "response.content_part.added",
+						"item_id":       responseID + "_item",
+						"output_index":  0,
+						"content_index": 0,
+						"part":          map[string]any{"type": "output_text", "text": ""},
+					})
+					ch <- SSEEvent{Event: "response.content_part.added", Data: partData}
+				}
 				if choice.Delta.Content != "" {
-					deltaData, _ := json.Marshal(map[string]string{"delta": choice.Delta.Content})
+					deltaData, _ := json.Marshal(map[string]any{
+						"type":          "response.output_text.delta",
+						"item_id":       responseID + "_item",
+						"output_index":  0,
+						"content_index": 0,
+						"delta":         choice.Delta.Content,
+					})
 					ch <- SSEEvent{Event: "response.output_text.delta", Data: deltaData}
 				}
 				if choice.FinishReason != nil {
+					if itemStarted {
+						itemDone, _ := json.Marshal(map[string]any{
+							"type":         "response.output_item.done",
+							"output_index": 0,
+							"item": map[string]any{
+								"id": responseID + "_item", "type": "message", "role": "assistant", "status": "in_progress",
+							},
+						})
+						ch <- SSEEvent{Event: "response.output_item.done", Data: itemDone}
+					}
+					completed = true
 					completeData, _ := json.Marshal(map[string]any{
-						"id": responseID, "status": "completed",
+						"type": "response.completed",
+						"response": map[string]any{
+							"id": responseID, "object": "response",
+						},
 					})
 					ch <- SSEEvent{Event: "response.completed", Data: completeData}
 				}
 			}
 		}
 		// Final completed event if not already sent.
-		if started {
-			lastData, _ := json.Marshal(map[string]string{"id": responseID})
+		if started && !completed {
+			lastData, _ := json.Marshal(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": responseID, "object": "response",
+				},
+			})
 			ch <- SSEEvent{Event: "response.completed", Data: lastData}
 		}
 	}()

@@ -21,6 +21,7 @@ func (t *ResToAnth) TranslateRequest(_ context.Context, req *Request, s *session
 
 	anthReq := t.buildMessages(s, &body)
 	anthReq.Model = req.Model
+	anthReq.Stream = true
 
 	anthBody, err := json.Marshal(anthReq)
 	if err != nil {
@@ -85,13 +86,17 @@ func (t *ResToAnth) buildMessages(s *session.Session, body *ResponsesRequest) *A
 	}
 
 	if len(body.Tools) > 0 {
-		req.Tools = make([]AnthropicTool, len(body.Tools))
-		for i, tool := range body.Tools {
-			req.Tools[i] = AnthropicTool{
+		req.Tools = make([]AnthropicTool, 0, len(body.Tools))
+		for _, tool := range body.Tools {
+			// Skip tools with empty names or null input schemas (invalid for Anthropic API).
+			if tool.Name == "" || tool.Parameters == nil {
+				continue
+			}
+			req.Tools = append(req.Tools, AnthropicTool{
 				Name:        tool.Name,
 				Description: tool.Description,
 				InputSchema: tool.Parameters,
-			}
+			})
 		}
 	}
 
@@ -160,6 +165,8 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 	go func() {
 		defer close(ch)
 		started := false
+		completed := false
+		itemStarted := false
 		var responseID string
 		for sseEv := range shared.ParseSSE(upstream) {
 			var event struct {
@@ -171,6 +178,11 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 						InputTokens int `json:"input_tokens"`
 					} `json:"usage"`
 				} `json:"message"`
+				Index       int `json:"index"`
+				ContentBlock struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content_block"`
 				Delta struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
@@ -187,27 +199,99 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 			case "message_start":
 				responseID = event.Message.ID
 				startData, _ := json.Marshal(map[string]any{
-					"id":    responseID,
-					"model": event.Message.Model,
+					"type": "response.created",
+					"response": map[string]any{
+						"id": responseID, "object": "response",
+					},
 				})
 				ch <- SSEEvent{Event: "response.created", Data: startData}
 				started = true
 
+			case "content_block_start":
+				if event.ContentBlock.Type == "text" && !itemStarted {
+					itemStarted = true
+					itemData, _ := json.Marshal(map[string]any{
+						"type":         "response.output_item.added",
+						"output_index": 0,
+						"item": map[string]any{
+							"id":     responseID + "_item",
+							"type":   "message",
+							"role":   "assistant",
+							"status": "in_progress",
+						},
+					})
+					ch <- SSEEvent{Event: "response.output_item.added", Data: itemData}
+
+					partData, _ := json.Marshal(map[string]any{
+						"type":          "response.content_part.added",
+						"item_id":       responseID + "_item",
+						"output_index":  0,
+						"content_index": 0,
+						"part": map[string]any{
+							"type": "output_text",
+							"text": "",
+						},
+					})
+					ch <- SSEEvent{Event: "response.content_part.added", Data: partData}
+				}
+
 			case "content_block_delta":
 				if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
-					deltaData, _ := json.Marshal(map[string]string{"delta": event.Delta.Text})
+					deltaData, _ := json.Marshal(map[string]any{
+						"type":          "response.output_text.delta",
+						"item_id":       responseID + "_item",
+						"output_index":  0,
+						"content_index": 0,
+						"delta":         event.Delta.Text,
+					})
 					ch <- SSEEvent{Event: "response.output_text.delta", Data: deltaData}
 				}
 
+			case "content_block_stop":
+				if itemStarted {
+					partDone, _ := json.Marshal(map[string]any{
+						"type":          "response.content_part.done",
+						"item_id":       responseID + "_item",
+						"output_index":  0,
+						"content_index": 0,
+						"part": map[string]any{
+							"type": "output_text",
+							"text": "",
+						},
+					})
+					ch <- SSEEvent{Event: "response.content_part.done", Data: partDone}
+				}
+
 			case "message_stop":
+				if itemStarted {
+					itemDone, _ := json.Marshal(map[string]any{
+						"type":         "response.output_item.done",
+						"output_index": 0,
+						"item": map[string]any{
+							"id": responseID + "_item",
+							"type": "message",
+							"role": "assistant", "status": "completed",
+						},
+					})
+					ch <- SSEEvent{Event: "response.output_item.done", Data: itemDone}
+				}
+				completed = true
 				completeData, _ := json.Marshal(map[string]any{
-					"id": responseID, "status": "completed",
+					"type": "response.completed",
+					"response": map[string]any{
+						"id": responseID, "object": "response",
+					},
 				})
 				ch <- SSEEvent{Event: "response.completed", Data: completeData}
 			}
 		}
-		if started {
-			lastData, _ := json.Marshal(map[string]string{"id": responseID})
+		if started && !completed {
+			lastData, _ := json.Marshal(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": responseID, "object": "response",
+				},
+			})
 			ch <- SSEEvent{Event: "response.completed", Data: lastData}
 		}
 	}()
@@ -296,6 +380,7 @@ type AnthropicRequest struct {
 	Messages  []AnthropicMessage `json:"messages"`
 	Tools     []AnthropicTool    `json:"tools,omitempty"`
 	MaxTokens int                `json:"max_tokens"`
+	Stream    bool               `json:"stream,omitempty"`
 	Thinking  *ThinkingConfig    `json:"thinking,omitempty"`
 }
 

@@ -12,11 +12,25 @@ import (
 
 func TestE2E_RoutesToHealthyProvider(t *testing.T) {
 	healthyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{
+		// Return SSE (streaming) since the gateway sends stream:true upstream.
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		respData, _ := json.Marshal(map[string]any{
 			"id":      "healthy-response",
 			"object":  "chat.completion",
 			"choices": []map[string]any{{"index": float64(0), "message": map[string]any{"role": "assistant", "content": "from healthy"}}},
 		})
+		chunks := []string{
+			`data: {"id":"healthy-response","object":"chat.completion.chunk","choices":[{"delta":{"content":"from healthy"},"index":0}]}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			w.Write([]byte(chunk + "\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		_ = respData
 	}))
 	defer healthyServer.Close()
 

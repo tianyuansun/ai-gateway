@@ -192,23 +192,81 @@ func (gw *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream
 }
 
 func (gw *Gateway) handleNonStream(w http.ResponseWriter, r *http.Request, upstream *http.Response, tr translator.Translator, tReq *translator.Request, sess *session.Session, sessionID, provID, canonicalName string) {
-	gwResp, err := tr.TranslateResponse(r.Context(), upstream, tReq, sess)
-	if err != nil {
-		http.Error(w, "translate response: "+err.Error(), http.StatusInternalServerError)
-		return
+	defer upstream.Body.Close()
+
+	// Drain the streaming channel and accumulate into a full Response.
+	var responseID string
+	var outputText string
+	for sseEv := range tr.TranslateStream(r.Context(), upstream.Body, tReq, sess) {
+		switch sseEv.Event {
+		case "response.created":
+			var data struct {
+				Response struct {
+					ID string `json:"id"`
+				} `json:"response"`
+			}
+			if json.Unmarshal(sseEv.Data, &data) == nil && data.Response.ID != "" {
+				responseID = data.Response.ID
+			}
+		case "response.output_text.delta":
+			var data struct {
+				Delta string `json:"delta"`
+			}
+			if json.Unmarshal(sseEv.Data, &data) == nil {
+				outputText += data.Delta
+			}
+		default:
+			// Passthrough / raw data events (no event type, just Chat chunks).
+			var chunk struct {
+				ID      string `json:"id"`
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+					Message struct {
+						Content string `json:"content"`
+					} `json:"message"`
+				} `json:"choices"`
+			}
+			if json.Unmarshal(sseEv.Data, &chunk) == nil {
+				if chunk.ID != "" && responseID == "" {
+					responseID = chunk.ID
+				}
+				for _, c := range chunk.Choices {
+					if c.Delta.Content != "" {
+						outputText += c.Delta.Content
+					}
+					if c.Message.Content != "" {
+						outputText += c.Message.Content
+					}
+				}
+			}
+		}
 	}
+
+	respBody, _ := json.Marshal(map[string]any{
+		"id":     responseID,
+		"object": "response",
+		"output": []map[string]any{{
+			"type": "message",
+			"role": "assistant",
+			"content": []map[string]any{{
+				"type": "output_text",
+				"text": outputText,
+			}},
+		}},
+	})
 
 	if sess != nil {
 		sess.ProviderID = provID
 		sess.ModelName = canonicalName
-		tr.UpdateSession(sess, tReq, gwResp)
 		gw.sessions.Set(sess.ID, sess)
 	}
 
 	w.Header().Set("X-Session-Id", sessionID)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(gwResp.StatusCode)
-	w.Write(gwResp.Body)
+	w.WriteHeader(http.StatusOK)
+	w.Write(respBody)
 }
 
 func isStreamRequest(body []byte) bool {
