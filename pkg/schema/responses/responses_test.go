@@ -295,3 +295,287 @@ func TestResponseStreamEventTypes(t *testing.T) {
 		}
 	}
 }
+
+// -- Deep roundtrip tests for Issue #52 -------------------------------------------
+
+// TestFunctionCallOutputItemRoundtrip verifies a request with a
+// function_call_output input item survives a roundtrip.
+func TestFunctionCallOutputItemRoundtrip(t *testing.T) {
+	reqJSON := `{
+		"model": "gpt-4o",
+		"input": [
+			{
+				"type": "message",
+				"role": "user",
+				"content": "What is the weather in SF?"
+			},
+			{
+				"type": "function_call",
+				"call_id": "call_abc123",
+				"name": "get_weather",
+				"arguments": "{\"location\":\"San Francisco\"}",
+				"id": "fc_abc123"
+			},
+			{
+				"type": "function_call_output",
+				"call_id": "call_abc123",
+				"output": "{\"temperature\": 22, \"condition\": \"sunny\"}"
+			}
+		]
+	}`
+
+	var req ResponseRequest
+	if err := json.Unmarshal([]byte(reqJSON), &req); err != nil {
+		t.Fatalf("unmarshal function_call_output request: %v", err)
+	}
+	if req.Model != "gpt-4o" {
+		t.Errorf("model mismatch")
+	}
+	if len(req.Input.Items) != 3 {
+		t.Fatalf("expected 3 input items, got %d", len(req.Input.Items))
+	}
+
+	// Check function_call item.
+	fc := req.Input.Items[1]
+	if fc.Type != "function_call" {
+		t.Errorf("expected item[1] type=function_call, got %s", fc.Type)
+	}
+	if fc.CallID != "call_abc123" {
+		t.Errorf("function_call call_id mismatch")
+	}
+	if fc.Name != "get_weather" {
+		t.Errorf("function_call name mismatch")
+	}
+
+	// Check function_call_output item.
+	fco := req.Input.Items[2]
+	if fco.Type != "function_call_output" {
+		t.Errorf("expected item[2] type=function_call_output, got %s", fco.Type)
+	}
+	if fco.CallID != "call_abc123" {
+		t.Errorf("function_call_output call_id mismatch")
+	}
+	if fco.Output != `{"temperature": 22, "condition": "sunny"}` {
+		t.Errorf("function_call_output output mismatch: %s", fco.Output)
+	}
+
+	// Roundtrip.
+	out, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal function_call_output request: %v", err)
+	}
+	var req2 ResponseRequest
+	if err := json.Unmarshal(out, &req2); err != nil {
+		t.Fatalf("unmarshal function_call_output roundtrip: %v", err)
+	}
+	if len(req2.Input.Items) != 3 {
+		t.Fatalf("roundtrip: expected 3 input items, got %d", len(req2.Input.Items))
+	}
+	fco2 := req2.Input.Items[2]
+	if fco2.Type != "function_call_output" {
+		t.Errorf("roundtrip: type mismatch")
+	}
+	if fco2.CallID != "call_abc123" {
+		t.Errorf("roundtrip: call_id mismatch")
+	}
+	if fco2.Output != `{"temperature": 22, "condition": "sunny"}` {
+		t.Errorf("roundtrip: output mismatch")
+	}
+}
+
+// TestRefusalContentPartDeepRoundtrip verifies refusal content parts survive
+// a full marshal-unmarshal roundtrip.
+func TestRefusalContentPartDeepRoundtrip(t *testing.T) {
+	respJSON := `{
+		"id": "resp_refusal_deep",
+		"object": "response",
+		"created_at": 1741476542,
+		"status": "completed",
+		"model": "gpt-4o",
+		"output": [
+			{
+				"type": "message",
+				"id": "msg_refusal_deep",
+				"status": "completed",
+				"role": "assistant",
+				"content": [
+					{
+						"type": "refusal",
+						"refusal": "I'm sorry, I cannot provide instructions for that activity."
+					}
+				]
+			}
+		],
+		"usage": {
+			"input_tokens": 25,
+			"output_tokens": 12,
+			"total_tokens": 37
+		}
+	}`
+
+	var resp Response
+	if err := json.Unmarshal([]byte(respJSON), &resp); err != nil {
+		t.Fatalf("unmarshal refusal deep response: %v", err)
+	}
+	outItem := resp.Output[0]
+	if outItem.Type != "message" {
+		t.Errorf("expected output type=message, got %s", outItem.Type)
+	}
+	if len(outItem.Content) != 1 {
+		t.Fatalf("expected 1 content part, got %d", len(outItem.Content))
+	}
+	cp := outItem.Content[0]
+	if cp.Type != "refusal" {
+		t.Errorf("expected content type=refusal, got %s", cp.Type)
+	}
+	if cp.Refusal != "I'm sorry, I cannot provide instructions for that activity." {
+		t.Errorf("refusal text mismatch")
+	}
+
+	// Roundtrip.
+	out, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal refusal deep response: %v", err)
+	}
+	var resp2 Response
+	if err := json.Unmarshal(out, &resp2); err != nil {
+		t.Fatalf("unmarshal refusal deep roundtrip: %v", err)
+	}
+	cp2 := resp2.Output[0].Content[0]
+	if cp2.Type != "refusal" {
+		t.Errorf("roundtrip: expected type=refusal, got %s", cp2.Type)
+	}
+	if cp2.Refusal != "I'm sorry, I cannot provide instructions for that activity." {
+		t.Errorf("roundtrip: refusal text mismatch")
+	}
+}
+
+// TestMultipleOutputItemsRoundtrip verifies a response with multiple output items
+// (function_call + message) survives a roundtrip.
+func TestMultipleOutputItemsRoundtrip(t *testing.T) {
+	respJSON := `{
+		"id": "resp_multi_out",
+		"object": "response",
+		"created_at": 1741476542,
+		"status": "completed",
+		"model": "gpt-4o",
+		"output": [
+			{
+				"type": "function_call",
+				"id": "fc_abc",
+				"call_id": "call_abc",
+				"name": "get_weather",
+				"arguments": "{\"location\":\"San Francisco\"}"
+			},
+			{
+				"type": "message",
+				"id": "msg_abc",
+				"status": "completed",
+				"role": "assistant",
+				"content": [
+					{
+						"type": "output_text",
+						"text": "The weather in San Francisco is sunny with a temperature of 22C.",
+						"annotations": []
+					}
+				]
+			}
+		],
+		"usage": {
+			"input_tokens": 80,
+			"output_tokens": 120,
+			"total_tokens": 200
+		}
+	}`
+
+	var resp Response
+	if err := json.Unmarshal([]byte(respJSON), &resp); err != nil {
+		t.Fatalf("unmarshal multiple output items: %v", err)
+	}
+	if len(resp.Output) != 2 {
+		t.Fatalf("expected 2 output items, got %d", len(resp.Output))
+	}
+	if resp.Output[0].Type != "function_call" {
+		t.Errorf("output[0] type mismatch: got %s", resp.Output[0].Type)
+	}
+	if resp.Output[0].Name != "get_weather" {
+		t.Errorf("output[0] name mismatch")
+	}
+	if resp.Output[1].Type != "message" {
+		t.Errorf("output[1] type mismatch: got %s", resp.Output[1].Type)
+	}
+	if resp.Output[1].Role != "assistant" {
+		t.Errorf("output[1] role mismatch")
+	}
+	if len(resp.Output[1].Content) != 1 {
+		t.Fatalf("expected 1 content part in message, got %d", len(resp.Output[1].Content))
+	}
+
+	// Roundtrip.
+	out, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal multiple output items: %v", err)
+	}
+	var resp2 Response
+	if err := json.Unmarshal(out, &resp2); err != nil {
+		t.Fatalf("unmarshal multiple output items roundtrip: %v", err)
+	}
+	if len(resp2.Output) != 2 {
+		t.Fatalf("roundtrip: expected 2 output items, got %d", len(resp2.Output))
+	}
+	if resp2.Output[0].Type != "function_call" {
+		t.Errorf("roundtrip: output[0] type mismatch")
+	}
+	if resp2.Output[0].Name != "get_weather" {
+		t.Errorf("roundtrip: output[0] name mismatch")
+	}
+	if resp2.Output[1].Type != "message" {
+		t.Errorf("roundtrip: output[1] type mismatch")
+	}
+	if resp2.Usage.TotalTokens != 200 {
+		t.Errorf("roundtrip: total_tokens mismatch")
+	}
+}
+
+// TestStreamEventErrorDeepRoundtrip verifies the error stream event survives
+// a full roundtrip with all error-specific fields checked.
+func TestStreamEventErrorDeepRoundtrip(t *testing.T) {
+	errJSON := `{
+		"type": "error",
+		"message": "The model produced invalid content that violated the usage policies.",
+		"code": "content_filter"
+	}`
+
+	var evt ResponseStreamEvent
+	if err := json.Unmarshal([]byte(errJSON), &evt); err != nil {
+		t.Fatalf("unmarshal error event: %v", err)
+	}
+	if evt.Type != "error" {
+		t.Errorf("expected type=error, got %s", evt.Type)
+	}
+	if evt.Message != "The model produced invalid content that violated the usage policies." {
+		t.Errorf("error message mismatch: %s", evt.Message)
+	}
+	if evt.Code != "content_filter" {
+		t.Errorf("error code mismatch: %s", evt.Code)
+	}
+
+	// Roundtrip.
+	out, err := json.Marshal(evt)
+	if err != nil {
+		t.Fatalf("marshal error event: %v", err)
+	}
+	var evt2 ResponseStreamEvent
+	if err := json.Unmarshal(out, &evt2); err != nil {
+		t.Fatalf("unmarshal error event roundtrip: %v", err)
+	}
+	if evt2.Type != "error" {
+		t.Errorf("roundtrip: type mismatch")
+	}
+	if evt2.Message != "The model produced invalid content that violated the usage policies." {
+		t.Errorf("roundtrip: message mismatch")
+	}
+	if evt2.Code != "content_filter" {
+		t.Errorf("roundtrip: code mismatch")
+	}
+}
