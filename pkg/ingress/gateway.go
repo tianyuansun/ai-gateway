@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -66,6 +65,9 @@ func (gw *Gateway) HealthChecker() *provider.HealthChecker {
 }
 
 func (gw *Gateway) Start() error {
+	// Set global log level from config.
+	logging.SetGlobalLevel(logging.ParseLevel(gw.cfg.Server.LogLevel))
+
 	// Start health checker
 	providers := make(map[string]provider.ProviderEndpoint)
 	for id, p := range gw.cfg.Providers {
@@ -95,7 +97,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 	var upstreamErr error
 	defer func() {
 		cfg := logging.FlushConfig{
-			Threshold: 5 * time.Second, // hardcoded for now; config in slice 4
+			Threshold: time.Duration(gw.cfg.Server.LogLatencyThresholdMs) * time.Millisecond,
 			XDebug:    xDebug,
 		}
 		latency := time.Since(startTime)
@@ -135,31 +137,45 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 		http.Error(w, fmt.Sprintf("model %q not configured", modelName), http.StatusNotFound)
 		return
 	}
+	if canonicalName != modelName {
+		logger.Debug("model_resolved", "alias", modelName, "canonical", canonicalName)
+	}
 
 	sessionID := extractSessionID(r, body, apiFormat)
 	if sessionID == "" {
 		sessionID = generateSessionID()
 	}
+	var sessionHit bool
+	var sess *session.Session
+	if sessionID != "" {
+		sess, _ = gw.sessions.Get(sessionID)
+	}
+	if sess != nil {
+		sessionHit = true
+	} else {
+		sess = &session.Session{ID: sessionID, TTL: 3600 * time.Second}
+	}
+	logger.Debug("session_lookup", "session_id", sessionID, "hit", sessionHit)
 
 	prov, provID, err := gw.selector.Select(model, sessionID)
 	if err != nil {
 		http.Error(w, "no provider available: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	logger.Debug("provider_selected",
+		"strategy", safeStrategy(model.Routing),
+		"provider", provID,
+	)
 
 	tr, endpoint := gw.resolveTranslator(apiFormat, prov)
 	if tr == nil {
 		http.Error(w, "no translator for this path", http.StatusInternalServerError)
 		return
 	}
-
-	var sess *session.Session
-	if sessionID != "" {
-		sess, _ = gw.sessions.Get(sessionID)
-	}
-	if sess == nil {
-		sess = &session.Session{ID: sessionID, TTL: 3600 * time.Second}
-	}
+	logger.Debug("translator_selected",
+		"exposed_format", apiFormat,
+		"endpoint", endpoint,
+	)
 
 	tReq := &translator.Request{
 		Model:     canonicalName,
@@ -168,11 +184,18 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 		Headers:   flattenHeaders(r.Header),
 	}
 
+	translateStart := time.Now()
 	upReq, err := tr.TranslateRequest(ctx, tReq, sess)
+	translateLatency := time.Since(translateStart)
 	if err != nil {
 		http.Error(w, "translate request: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	logger.Debug("translate_request",
+		"latency_ms", translateLatency.Milliseconds(),
+		"body_size_in", len(body),
+		"body_size_out", len(upReq.Body),
+	)
 
 	if upReq.URL == "" {
 		upReq.URL = endpoint
@@ -187,24 +210,38 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 
 	apiKey := gw.cfg.ProviderAPIKey(prov)
 
+	upstreamStart := time.Now()
 	resp, err := gw.client.Call(ctx, baseURL, upReq.URL, apiKey, upReq.Body, upReq.Headers)
+	upstreamLatency := time.Since(upstreamStart)
 	if err != nil {
 		upstreamErr = err
-		log.Printf("[gateway] upstream error: %v", err)
+		logger.Error("upstream_error", "latency_ms", upstreamLatency.Milliseconds(), "error", err.Error())
 		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	upstreamStatus = resp.StatusCode
+	logger.Info("upstream_call",
+		"base_url", baseURL,
+		"path", upReq.URL,
+		"status", upstreamStatus,
+		"latency_ms", upstreamLatency.Milliseconds(),
+	)
 
 	if isStreamRequest(body) {
-		gw.handleStream(w, r, resp, tr, tReq, sess, sessionID, provID, canonicalName)
+		gw.handleStream(w, r, resp, ctx, tr, tReq, sess, sessionID, provID, canonicalName)
 	} else {
-		gw.handleNonStream(w, r, resp, tr, tReq, sess, sessionID, provID, canonicalName)
+		gw.handleNonStream(w, r, resp, ctx, tr, tReq, sess, sessionID, provID, canonicalName)
 	}
+	logger.Info("response",
+		"status", upstreamStatus,
+		"latency_ms", time.Since(startTime).Milliseconds(),
+	)
 }
 
-func (gw *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream *http.Response, tr translator.Translator, tReq *translator.Request, sess *session.Session, sessionID, provID, canonicalName string) {
+func (gw *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream *http.Response, ctx context.Context, tr translator.Translator, tReq *translator.Request, sess *session.Session, sessionID, provID, canonicalName string) {
 	defer upstream.Body.Close()
+
+	logger := logging.LoggerFrom(ctx)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -217,7 +254,9 @@ func (gw *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream
 		return
 	}
 
+	eventCount := 0
 	for sseEv := range tr.TranslateStream(r.Context(), upstream.Body, tReq, sess) {
+		eventCount++
 		if sseEv.Event != "" {
 			fmt.Fprintf(w, "event: %s\n", sseEv.Event)
 		}
@@ -230,15 +269,29 @@ func (gw *Gateway) handleStream(w http.ResponseWriter, r *http.Request, upstream
 		sess.ModelName = canonicalName
 		gw.sessions.Set(sess.ID, sess)
 	}
+
+	if logger != nil {
+		logger.Debug("translate_stream",
+			"event_count", eventCount,
+		)
+		logger.Debug("session_update",
+			"provider_bound", provID,
+			"model", canonicalName,
+		)
+	}
 }
 
-func (gw *Gateway) handleNonStream(w http.ResponseWriter, r *http.Request, upstream *http.Response, tr translator.Translator, tReq *translator.Request, sess *session.Session, sessionID, provID, canonicalName string) {
+func (gw *Gateway) handleNonStream(w http.ResponseWriter, r *http.Request, upstream *http.Response, ctx context.Context, tr translator.Translator, tReq *translator.Request, sess *session.Session, sessionID, provID, canonicalName string) {
 	defer upstream.Body.Close()
+
+	logger := logging.LoggerFrom(ctx)
 
 	// Drain the streaming channel and accumulate into a full Response.
 	var responseID string
 	var outputText string
+	eventCount := 0
 	for sseEv := range tr.TranslateStream(r.Context(), upstream.Body, tReq, sess) {
+		eventCount++
 		switch sseEv.Event {
 		case "response.created":
 			var data struct {
@@ -302,6 +355,17 @@ func (gw *Gateway) handleNonStream(w http.ResponseWriter, r *http.Request, upstr
 		sess.ProviderID = provID
 		sess.ModelName = canonicalName
 		gw.sessions.Set(sess.ID, sess)
+	}
+
+	if logger != nil {
+		logger.Debug("translate_response",
+			"event_count", eventCount,
+			"body_size", len(respBody),
+		)
+		logger.Debug("session_update",
+			"provider_bound", provID,
+			"model", canonicalName,
+		)
 	}
 
 	w.Header().Set("X-Session-Id", sessionID)
@@ -392,4 +456,11 @@ func flattenHeaders(h http.Header) map[string]string {
 		}
 	}
 	return result
+}
+
+func safeStrategy(r *config.RoutingConfig) string {
+	if r == nil {
+		return "priority"
+	}
+	return r.Strategy
 }
