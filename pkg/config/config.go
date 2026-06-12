@@ -14,8 +14,10 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Listen  string        `yaml:"listen"`
-	Session SessionConfig `yaml:"session"`
+	Listen                 string        `yaml:"listen"`
+	LogLevel               string        `yaml:"log_level"`
+	LogLatencyThresholdMs  int           `yaml:"log_latency_threshold_ms"`
+	Session                SessionConfig `yaml:"session"`
 }
 
 type SessionConfig struct {
@@ -78,6 +80,12 @@ func Load(path string) (*Config, error) {
 func (c *Config) applyDefaults() {
 	if c.Server.Listen == "" {
 		c.Server.Listen = "127.0.0.1:9000"
+	}
+	if c.Server.LogLevel == "" {
+		c.Server.LogLevel = "info"
+	}
+	if c.Server.LogLatencyThresholdMs == 0 {
+		c.Server.LogLatencyThresholdMs = 5000
 	}
 	if c.Server.Session.TTLSeconds == 0 {
 		c.Server.Session.TTLSeconds = 3600

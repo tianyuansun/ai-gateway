@@ -20,3 +20,17 @@ func GlobalLevel() slog.Level {
 func SetGlobalLevel(level slog.Level) {
 	globalLevel.Store(int32(level))
 }
+
+// ParseLevel parses a level string, defaulting to info.
+func ParseLevel(s string) slog.Level {
+	switch s {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
