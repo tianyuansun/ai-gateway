@@ -9,3 +9,4 @@
 - **Request log buffer** — a per-request ring buffer of structured log records, carried via `context.Context`. Drained (flushed to output) when a *trigger condition* fires; otherwise discarded.
 - **Trigger condition** — a rule that causes a request's buffered logs to be flushed: error response, upstream failure, latency exceeding a threshold, client cancellation, or explicit debug header (`X-Debug: true`).
 - **Log level** — controls the minimum severity that enters the buffer: `debug`, `info`, `warn`, `error`. Global default + per-request override via `X-Debug` header.
+- **Schema types** — Go structs that model the request/response shapes of each external API format (Responses API, Chat Completions API, Anthropic Messages API). Generated from upstream OpenAPI/JSON Schema specs; not hand-written. Three independent type sets — one per API format — with translators operating directly between them.

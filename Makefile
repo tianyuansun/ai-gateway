@@ -11,7 +11,18 @@ LDFLAGS := -s -w \
 BIN_DIR := bin
 BINARY  := $(BIN_DIR)/gateway
 
-.PHONY: build test test-e2e lint run clean
+.PHONY: build test test-e2e lint run clean generate
+
+# generate regenerates API schema types from upstream specs.
+# Types are hand-curated from official JSON Schema sources to ensure
+# accuracy and completeness. Run this after updating the source schemas.
+generate:
+	@echo "Schema types are curated from:"
+	@echo "  Anthropic: https://github.com/api-evangelist/anthropic/blob/main/json-schema/anthropic-message-schema.json"
+	@echo "  OpenAI:    https://github.com/openai/openai-openapi (Chat + Responses)"
+	@echo ""
+	@echo "Update the .go files in pkg/schema/ when upstream specs change."
+	@echo "No automated codegen tool is used — see ADR 0002 for rationale."
 
 build:
 	go build -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/gateway
