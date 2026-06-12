@@ -44,6 +44,8 @@ func (s *ProviderSelector) Select(model *config.Model, sessionID string) (*confi
 	switch strategy {
 	case "weighted":
 		return s.selectWeighted(model)
+	case "random":
+		return s.selectRandom(model)
 	default:
 		return s.selectPriority(model)
 	}
@@ -93,6 +95,29 @@ func (s *ProviderSelector) selectWeighted(model *config.Model) (*config.Provider
 			return c.provider, c.id, nil
 		}
 	}
+	return candidates[0].provider, candidates[0].id, nil
+}
+
+func (s *ProviderSelector) selectRandom(model *config.Model) (*config.Provider, string, error) {
+	type candidate struct {
+		provider *config.Provider
+		id       string
+	}
+	var candidates []candidate
+	for _, mp := range model.Providers {
+		if prov, ok := s.cfg.Providers[mp.Provider]; ok {
+			if s.isHealthy(mp.Provider) {
+				candidates = append(candidates, candidate{&prov, mp.Provider})
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, "", fmt.Errorf("no healthy provider available")
+	}
+
+	rand.Shuffle(len(candidates), func(i, j int) {
+		candidates[i], candidates[j] = candidates[j], candidates[i]
+	})
 	return candidates[0].provider, candidates[0].id, nil
 }
 
