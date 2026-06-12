@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/tianyuansun/ai-gateway/pkg/config"
 	"github.com/tianyuansun/ai-gateway/pkg/provider"
@@ -34,15 +35,16 @@ type translatorKey struct {
 
 func NewGateway(cfg *config.Config) *Gateway {
 	sessStore := session.NewMemoryStore(10000, 3600)
-	sel := router.NewProviderSelector(cfg, sessStore)
+	checker := provider.NewHealthChecker(30)
+	sel := router.NewProviderSelector(cfg, sessStore, checker)
 
 	gw := &Gateway{
 		cfg:         cfg,
 		resolver:    router.NewModelResolver(cfg),
 		selector:    sel,
-		client:      provider.NewClient(120000),
+		client:      provider.NewClient(120 * time.Second),
 		sessions:    sessStore,
-		health:      provider.NewHealthChecker(30),
+		health:      checker,
 		translators: make(map[translatorKey]translator.Translator),
 	}
 
@@ -52,6 +54,10 @@ func NewGateway(cfg *config.Config) *Gateway {
 	gw.translators[translatorKey{"chat", "anthropic"}] = &translator.ChatToAnth{}
 
 	return gw
+}
+
+func (gw *Gateway) HealthChecker() *provider.HealthChecker {
+	return gw.health
 }
 
 func (gw *Gateway) Start() error {

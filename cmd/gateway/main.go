@@ -35,7 +35,7 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	modelsHandler := ingress.NewModelsHandler(cfg)
+	modelsHandler := ingress.NewModelsHandler(cfg, gw.HealthChecker())
 	codexConfigHandler := ingress.NewCodexConfigHandler(cfg)
 
 	mux.HandleFunc("/v1/responses", gw.ServeResponses)
@@ -44,7 +44,7 @@ func main() {
 	mux.Handle("/v1/models", modelsHandler)
 	mux.Handle("/v1/codex-config", codexConfigHandler)
 
-	healthHandler := ingress.NewHealthHandler(cfg)
+	healthHandler := ingress.NewHealthHandler(cfg, gw.HealthChecker())
 	mux.Handle("/health", healthHandler)
 
 	server := &http.Server{

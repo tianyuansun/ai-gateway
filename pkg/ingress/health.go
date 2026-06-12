@@ -13,10 +13,10 @@ type HealthHandler struct {
 	checker *provider.HealthChecker
 }
 
-func NewHealthHandler(cfg *config.Config) *HealthHandler {
+func NewHealthHandler(cfg *config.Config, checker *provider.HealthChecker) *HealthHandler {
 	return &HealthHandler{
 		cfg:     cfg,
-		checker: provider.NewHealthChecker(30),
+		checker: checker,
 	}
 }
 

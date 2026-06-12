@@ -5,14 +5,16 @@ import (
 	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/config"
+	"github.com/tianyuansun/ai-gateway/pkg/provider"
 )
 
 type ModelsHandler struct {
-	cfg *config.Config
+	cfg     *config.Config
+	checker *provider.HealthChecker
 }
 
-func NewModelsHandler(cfg *config.Config) *ModelsHandler {
-	return &ModelsHandler{cfg: cfg}
+func NewModelsHandler(cfg *config.Config, checker *provider.HealthChecker) *ModelsHandler {
+	return &ModelsHandler{cfg: cfg, checker: checker}
 }
 
 type ModelEntry struct {
@@ -41,7 +43,11 @@ func (h *ModelsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Providers:    make([]ProviderEntry, len(model.Providers)),
 		}
 		for i, mp := range model.Providers {
-			entry.Providers[i] = ProviderEntry{ID: mp.Provider, Status: "healthy"}
+			status := "healthy"
+			if h.checker != nil && !h.checker.IsHealthy(mp.Provider) {
+				status = "degraded"
+			}
+			entry.Providers[i] = ProviderEntry{ID: mp.Provider, Status: status}
 		}
 		data = append(data, entry)
 	}

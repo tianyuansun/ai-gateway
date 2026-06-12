@@ -5,20 +5,21 @@ import (
 	"math/rand"
 
 	"github.com/tianyuansun/ai-gateway/pkg/config"
+	"github.com/tianyuansun/ai-gateway/pkg/provider"
 	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
 
 type ProviderSelector struct {
-	cfg           *config.Config
-	sessionStore  session.Store
-	healthStatus  map[string]bool
+	cfg          *config.Config
+	sessionStore session.Store
+	checker      *provider.HealthChecker
 }
 
-func NewProviderSelector(cfg *config.Config, store session.Store) *ProviderSelector {
+func NewProviderSelector(cfg *config.Config, store session.Store, checker *provider.HealthChecker) *ProviderSelector {
 	return &ProviderSelector{
 		cfg:          cfg,
 		sessionStore: store,
-		healthStatus: make(map[string]bool),
+		checker:      checker,
 	}
 }
 
@@ -96,12 +97,5 @@ func (s *ProviderSelector) selectWeighted(model *config.Model) (*config.Provider
 }
 
 func (s *ProviderSelector) isHealthy(providerID string) bool {
-	if status, ok := s.healthStatus[providerID]; ok {
-		return status
-	}
-	return true
-}
-
-func (s *ProviderSelector) SetHealth(providerID string, healthy bool) {
-	s.healthStatus[providerID] = healthy
+	return s.checker.IsHealthy(providerID)
 }

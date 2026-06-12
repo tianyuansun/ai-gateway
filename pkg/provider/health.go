@@ -85,6 +85,12 @@ func (h *HealthChecker) IsHealthy(providerID string) bool {
 	return true // default healthy
 }
 
+func (h *HealthChecker) SetHealth(providerID string, healthy bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.status[providerID] = healthy
+}
+
 func (h *HealthChecker) Status() map[string]bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
