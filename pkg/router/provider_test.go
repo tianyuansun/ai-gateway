@@ -5,6 +5,7 @@ import (
 
 	"github.com/tianyuansun/ai-gateway/pkg/config"
 	"github.com/tianyuansun/ai-gateway/pkg/provider"
+	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
 
 func TestSelectWeightedSkipsUnhealthy(t *testing.T) {
@@ -169,5 +170,101 @@ func TestSelectAllUnhealthyReturnsError(t *testing.T) {
 	_, _, err := selector.Select(model, "")
 	if err == nil {
 		t.Fatal("expected error when all providers unhealthy, got nil")
+	}
+}
+
+// mockSessionStore implements session.Store for testing.
+type mockSessionStore struct {
+	sessions map[string]*session.Session
+}
+
+func (m *mockSessionStore) Get(id string) (*session.Session, error) {
+	if m.sessions == nil {
+		return nil, nil
+	}
+	s, ok := m.sessions[id]
+	if !ok {
+		return nil, nil
+	}
+	return s, nil
+}
+
+func (m *mockSessionStore) Set(id string, s *session.Session) error {
+	if m.sessions == nil {
+		m.sessions = make(map[string]*session.Session)
+	}
+	m.sessions[id] = s
+	return nil
+}
+
+func (m *mockSessionStore) Delete(id string) error {
+	if m.sessions != nil {
+		delete(m.sessions, id)
+	}
+	return nil
+}
+
+func (m *mockSessionStore) Prune() {}
+
+func TestSelectEmptyProvidersReturnsError(t *testing.T) {
+	cfg := &config.Config{
+		Providers: map[string]config.Provider{},
+	}
+
+	checker := provider.NewHealthChecker(30)
+	selector := NewProviderSelector(cfg, nil, checker)
+
+	model := &config.Model{
+		Routing:   &config.RoutingConfig{Strategy: "priority"},
+		Providers: []config.ModelProvider{},
+	}
+
+	_, _, err := selector.Select(model, "")
+	if err == nil {
+		t.Fatal("expected error when providers list is empty, got nil")
+	}
+	if err.Error() == "no healthy provider available" {
+		t.Errorf("expected 'no providers configured' error, got 'no healthy provider available'")
+	}
+}
+
+func TestSelectSessionAffinity(t *testing.T) {
+	cfg := &config.Config{
+		Providers: map[string]config.Provider{
+			"p1": {Endpoints: config.ProviderEndpoints{Chat: "http://p1"}},
+			"p2": {Endpoints: config.ProviderEndpoints{Chat: "http://p2"}},
+		},
+	}
+
+	store := &mockSessionStore{
+		sessions: map[string]*session.Session{
+			"sess-1": {ProviderID: "p2"},
+		},
+	}
+
+	checker := provider.NewHealthChecker(30)
+	// Make all providers healthy so affinity is the deciding factor.
+	checker.SetHealth("p1", true)
+	checker.SetHealth("p2", true)
+
+	selector := NewProviderSelector(cfg, store, checker)
+
+	model := &config.Model{
+		Routing: &config.RoutingConfig{Strategy: "priority"},
+		Providers: []config.ModelProvider{
+			{Provider: "p1", Priority: 1},
+			{Provider: "p2", Priority: 2},
+		},
+	}
+
+	prov, provID, err := selector.Select(model, "sess-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if provID != "p2" {
+		t.Errorf("session affinity should select p2, got %s", provID)
+	}
+	if prov == nil {
+		t.Fatal("expected non-nil provider")
 	}
 }
