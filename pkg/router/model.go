@@ -1,6 +1,6 @@
 package router
 
-import "github.com/tianyuansun/ai-gateway/config"
+import "github.com/tianyuansun/ai-gateway/pkg/config"
 
 type ModelResolver struct {
 	cfg *config.Config

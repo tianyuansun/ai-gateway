@@ -9,12 +9,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/tianyuansun/ai-gateway/config"
-	"github.com/tianyuansun/ai-gateway/ingress"
+	"github.com/tianyuansun/ai-gateway/pkg/config"
+	"github.com/tianyuansun/ai-gateway/pkg/ingress"
 )
 
 func main() {
-	configPath := flag.String("config", "config/gateway.yaml", "path to config file")
+	configPath := flag.String("config", "gateway.yaml", "path to config file")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)

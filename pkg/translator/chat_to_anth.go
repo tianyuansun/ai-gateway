@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"io"
 
-	"github.com/tianyuansun/ai-gateway/session"
+	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
 
 // ChatToAnth translates Chat Completions API requests to Anthropic Messages API.

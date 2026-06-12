@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/tianyuansun/ai-gateway/config"
-	"github.com/tianyuansun/ai-gateway/provider"
+	"github.com/tianyuansun/ai-gateway/pkg/config"
+	"github.com/tianyuansun/ai-gateway/pkg/provider"
 )
 
 type HealthHandler struct {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 
-	"github.com/tianyuansun/ai-gateway/session"
+	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
 
 type APIFormat string

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math/rand"
 
-	"github.com/tianyuansun/ai-gateway/config"
-	"github.com/tianyuansun/ai-gateway/session"
+	"github.com/tianyuansun/ai-gateway/pkg/config"
+	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
 
 type ProviderSelector struct {

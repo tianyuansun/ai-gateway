@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/tianyuansun/ai-gateway/config"
+	"github.com/tianyuansun/ai-gateway/pkg/config"
 )
 
 type ModelsHandler struct {

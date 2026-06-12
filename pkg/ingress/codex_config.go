@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/tianyuansun/ai-gateway/config"
+	"github.com/tianyuansun/ai-gateway/pkg/config"
 )
 
 type CodexConfigHandler struct {

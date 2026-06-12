@@ -9,11 +9,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/tianyuansun/ai-gateway/config"
-	"github.com/tianyuansun/ai-gateway/provider"
-	"github.com/tianyuansun/ai-gateway/router"
-	"github.com/tianyuansun/ai-gateway/session"
-	"github.com/tianyuansun/ai-gateway/translator"
+	"github.com/tianyuansun/ai-gateway/pkg/config"
+	"github.com/tianyuansun/ai-gateway/pkg/provider"
+	"github.com/tianyuansun/ai-gateway/pkg/router"
+	"github.com/tianyuansun/ai-gateway/pkg/session"
+	"github.com/tianyuansun/ai-gateway/pkg/translator"
 )
 
 type Gateway struct {
