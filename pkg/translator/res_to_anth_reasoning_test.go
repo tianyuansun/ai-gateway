@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/tianyuansun/ai-gateway/pkg/schema/anthropic"
 	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
 
@@ -79,7 +80,7 @@ func TestResToAnth_TranslateRequestInjectsThinking(t *testing.T) {
 		t.Fatalf("TranslateRequest: %v", err)
 	}
 
-	var anthReq AnthropicRequest
+	var anthReq anthropic.MessageRequest
 	if err := json.Unmarshal(upReq.Body, &anthReq); err != nil {
 		t.Fatalf("unmarshal upstream body: %v", err)
 	}

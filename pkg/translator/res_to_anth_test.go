@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/tianyuansun/ai-gateway/pkg/schema/anthropic"
+	"github.com/tianyuansun/ai-gateway/pkg/schema/responses"
 	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
 
@@ -21,7 +23,6 @@ func TestResToAnth_UsesSessionMessages(t *testing.T) {
 	}
 
 	tr := &ResToAnth{}
-	// Body is a new turn — it should be ignored when session has messages.
 	body := responsesRequest(t, "ds-pro", "what is the answer?")
 	req := &Request{
 		Model:     "ds-pro",
@@ -34,7 +35,7 @@ func TestResToAnth_UsesSessionMessages(t *testing.T) {
 		t.Fatalf("TranslateRequest: %v", err)
 	}
 
-	var anthReq AnthropicRequest
+	var anthReq anthropic.MessageRequest
 	if err := json.Unmarshal(upReq.Body, &anthReq); err != nil {
 		t.Fatalf("unmarshal output: %v", err)
 	}
@@ -64,7 +65,7 @@ func TestResToAnth_NilSessionBuildsFromBody(t *testing.T) {
 		t.Fatalf("TranslateRequest: %v", err)
 	}
 
-	var anthReq AnthropicRequest
+	var anthReq anthropic.MessageRequest
 	if err := json.Unmarshal(upReq.Body, &anthReq); err != nil {
 		t.Fatalf("unmarshal output: %v", err)
 	}
@@ -75,25 +76,27 @@ func TestResToAnth_NilSessionBuildsFromBody(t *testing.T) {
 
 func responsesRequest(t *testing.T, model, text string) []byte {
 	t.Helper()
-	b, _ := json.Marshal(ResponsesRequest{
+	textJSON, _ := json.Marshal(text)
+	b, _ := json.Marshal(responses.ResponseRequest{
 		Model: model,
-		Input: []InputItem{
-			{Type: "message", Role: "user", Content: []ContentPart{{Type: "input_text", Text: text}}},
+		Input: responses.ResponseInput{
+			Items: []responses.ResponseInputItem{
+				{Type: "message", Role: "user", Content: json.RawMessage(textJSON)},
+			},
 		},
 	})
 	return b
 }
 
 func TestResToAnth_TranslateResponseReadsHTTPBody(t *testing.T) {
-	// Build a minimal Anthropic text response.
-	anthResp := AnthropicResponse{
+	anthResp := anthropic.MessageResponse{
 		ID:   "msg_1",
 		Type: "message",
 		Role: "assistant",
-		Content: []AnthropicContent{
+		Content: []anthropic.ResponseContentBlock{
 			{Type: "text", Text: "hello from anthropic"},
 		},
-		Usage: &AnthropicUsage{InputTokens: 10, OutputTokens: 5},
+		Usage: anthropic.Usage{InputTokens: 10, OutputTokens: 5},
 	}
 	respBody, _ := json.Marshal(anthResp)
 
@@ -101,8 +104,8 @@ func TestResToAnth_TranslateResponseReadsHTTPBody(t *testing.T) {
 		StatusCode: 200,
 		Body:       io.NopCloser(bytes.NewReader(respBody)),
 		Header: http.Header{
-			"Content-Type":   []string{"application/json"},
-			"X-Request-Id":   []string{"req-123"},
+			"Content-Type": []string{"application/json"},
+			"X-Request-Id": []string{"req-123"},
 		},
 	}
 
@@ -123,8 +126,7 @@ func TestResToAnth_TranslateResponseReadsHTTPBody(t *testing.T) {
 		t.Fatal("expected non-nil body")
 	}
 
-	// Verify it translated to Responses format.
-	var responsesResp ResponsesResponse
+	var responsesResp responses.Response
 	if err := json.Unmarshal(result.Body, &responsesResp); err != nil {
 		t.Fatalf("unmarshal result body: %v", err)
 	}
