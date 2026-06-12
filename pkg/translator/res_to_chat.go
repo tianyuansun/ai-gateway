@@ -136,6 +136,7 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 	ch := make(chan SSEEvent)
 	go func() {
 		defer close(ch)
+			seq := int64(0)
 		started := false
 		completed := false
 		itemStarted := false
@@ -143,17 +144,17 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 		for sseEv := range shared.ParseSSE(upstream) {
 			if sseEv.Data == "[DONE]" {
 				if itemStarted {
-					itemDone, _ := json.Marshal(map[string]any{
+					itemDone, _ := evt(&seq, map[string]any{
 						"type":         "response.output_item.done",
 						"output_index": 0,
 						"item": map[string]any{
-							"id": responseID + "_item", "type": "message", "role": "assistant", "status": "in_progress",
+							"id": responseID + "_item", "type": "message", "role": "assistant", "status": "in_progress", "content": []any{},
 						},
 					})
 					ch <- SSEEvent{Event: "response.output_item.done", Data: itemDone}
 				}
 				completed = true
-				completeData, _ := json.Marshal(map[string]any{
+				completeData, _ := evt(&seq, map[string]any{
 					"type": "response.completed",
 					"response": map[string]any{
 						"id": responseID, "object": "response",
@@ -182,27 +183,34 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 
 			if !started {
 				started = true
-				startData, _ := json.Marshal(map[string]any{
+				startData, _ := evt(&seq, map[string]any{
 					"type": "response.created",
 					"response": map[string]any{
 						"id": responseID, "object": "response",
 					},
 				})
 				ch <- SSEEvent{Event: "response.created", Data: startData}
+				inProgressData, _ := evt(&seq, map[string]any{
+					"type": "response.in_progress",
+					"response": map[string]any{
+						"id": responseID, "object": "response",
+					},
+				})
+				ch <- SSEEvent{Event: "response.in_progress", Data: inProgressData}
 			}
 
 			for _, choice := range chunk.Choices {
 				if choice.Delta.Content != "" && !itemStarted {
 					itemStarted = true
-					itemData, _ := json.Marshal(map[string]any{
+					itemData, _ := evt(&seq, map[string]any{
 						"type":         "response.output_item.added",
 						"output_index": 0,
 						"item": map[string]any{
-							"id": responseID + "_item", "type": "message", "role": "assistant", "status": "in_progress",
+							"id": responseID + "_item", "type": "message", "role": "assistant", "status": "in_progress", "content": []any{},
 						},
 					})
 					ch <- SSEEvent{Event: "response.output_item.added", Data: itemData}
-					partData, _ := json.Marshal(map[string]any{
+					partData, _ := evt(&seq, map[string]any{
 						"type":          "response.content_part.added",
 						"item_id":       responseID + "_item",
 						"output_index":  0,
@@ -212,7 +220,7 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 					ch <- SSEEvent{Event: "response.content_part.added", Data: partData}
 				}
 				if choice.Delta.Content != "" {
-					deltaData, _ := json.Marshal(map[string]any{
+					deltaData, _ := evt(&seq, map[string]any{
 						"type":          "response.output_text.delta",
 						"item_id":       responseID + "_item",
 						"output_index":  0,
@@ -223,7 +231,7 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 				}
 				if choice.FinishReason != nil {
 					if itemStarted {
-						itemDone, _ := json.Marshal(map[string]any{
+						itemDone, _ := evt(&seq, map[string]any{
 							"type":         "response.output_item.done",
 							"output_index": 0,
 							"item": map[string]any{
@@ -233,7 +241,7 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 						ch <- SSEEvent{Event: "response.output_item.done", Data: itemDone}
 					}
 					completed = true
-					completeData, _ := json.Marshal(map[string]any{
+					completeData, _ := evt(&seq, map[string]any{
 						"type": "response.completed",
 						"response": map[string]any{
 							"id": responseID, "object": "response",
@@ -244,7 +252,7 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 			}
 		}
 		if started && !completed {
-			lastData, _ := json.Marshal(map[string]any{
+			lastData, _ := evt(&seq, map[string]any{
 				"type": "response.completed",
 				"response": map[string]any{
 					"id": responseID, "object": "response",
