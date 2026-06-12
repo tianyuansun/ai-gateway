@@ -85,7 +85,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 	startTime := time.Now()
 	requestID := generateRequestID()
 	xDebug := r.Header.Get("X-Debug") == "true"
-	level := slog.LevelInfo
+	level := logging.GlobalLevel()
 	if xDebug {
 		level = slog.LevelDebug
 	}

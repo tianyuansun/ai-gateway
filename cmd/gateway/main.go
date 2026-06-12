@@ -11,6 +11,7 @@ import (
 
 	"github.com/tianyuansun/ai-gateway/pkg/config"
 	"github.com/tianyuansun/ai-gateway/pkg/ingress"
+	"github.com/tianyuansun/ai-gateway/pkg/logging"
 )
 
 var (
@@ -46,6 +47,8 @@ func main() {
 
 	healthHandler := ingress.NewHealthHandler(cfg, gw.HealthChecker())
 	mux.Handle("/health", healthHandler)
+
+	mux.Handle("/admin/log-level", logging.AdminHandler())
 
 	server := &http.Server{
 		Addr:    cfg.Server.Listen,
