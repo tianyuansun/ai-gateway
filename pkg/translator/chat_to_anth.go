@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/tianyuansun/ai-gateway/pkg/schema/anthropic"
+	"github.com/tianyuansun/ai-gateway/pkg/schema/chat"
 	"github.com/tianyuansun/ai-gateway/pkg/session"
 	"github.com/tianyuansun/ai-gateway/pkg/shared"
 )
@@ -15,67 +17,68 @@ import (
 type ChatToAnth struct{}
 
 func (t *ChatToAnth) TranslateRequest(_ context.Context, req *Request, s *session.Session) (*UpstreamRequest, error) {
-	var chatReq ChatRequest
+	var chatReq chat.ChatCompletionRequest
 	if err := json.Unmarshal(req.Body, &chatReq); err != nil {
 		return nil, err
 	}
 
-	anthReq := &AnthropicRequest{
+	anthReq := &anthropic.MessageRequest{
 		Model:     req.Model,
 		MaxTokens: 32768,
 		Stream:    true,
 	}
 
-	messages := []AnthropicMessage{}
+	messages := []anthropic.MessageParam{}
 	for _, msg := range chatReq.Messages {
+		msgText := contentString(msg.Content)
 		switch msg.Role {
 		case "system", "developer":
-			anthReq.System = msg.Content
+			anthReq.System = &anthropic.SystemContent{String: &msgText}
 		case "assistant":
-			var content []AnthropicContent
+			var content []anthropic.ContentBlockParam
 			if len(msg.ToolCalls) > 0 {
 				for _, tc := range msg.ToolCalls {
-					content = append(content, AnthropicContent{
+					content = append(content, anthropic.ContentBlockParam{
 						Type:  "tool_use",
 						ID:    tc.ID,
 						Name:  tc.Function.Name,
-						Input: parseJSON(tc.Function.Arguments),
+						Input: json.RawMessage(tc.Function.Arguments),
 					})
 				}
-			} else if msg.Content != "" {
-				content = append(content, AnthropicContent{Type: "text", Text: msg.Content})
+			} else if msgText != "" {
+				content = append(content, anthropic.ContentBlockParam{Type: "text", Text: msgText})
 			}
-			messages = append(messages, AnthropicMessage{Role: "assistant", Content: content})
+			messages = append(messages, anthropic.MessageParam{Role: "assistant", Content: content})
 		case "tool":
-			messages = append(messages, AnthropicMessage{
+			messages = append(messages, anthropic.MessageParam{
 				Role: "user",
-				Content: []AnthropicContent{{
+				Content: []anthropic.ContentBlockParam{{
 					Type:      "tool_result",
 					ToolUseID: msg.ToolCallID,
-					Content:   msg.Content,
+					Content:   msgText,
 				}},
 			})
 		default:
-			messages = append(messages, AnthropicMessage{
+			messages = append(messages, anthropic.MessageParam{
 				Role:    msg.Role,
-				Content: []AnthropicContent{{Type: "text", Text: msg.Content}},
+				Content: []anthropic.ContentBlockParam{{Type: "text", Text: msgText}},
 			})
 		}
 	}
 	anthReq.Messages = messages
 
 	if len(chatReq.Tools) > 0 {
-		anthReq.Tools = make([]AnthropicTool, len(chatReq.Tools))
+		anthReq.Tools = make([]anthropic.ToolDefinition, len(chatReq.Tools))
 		for i, tool := range chatReq.Tools {
-			anthReq.Tools[i] = AnthropicTool{
-				Name:        tool.Name,
-				Description: tool.Description,
-				InputSchema: tool.Parameters,
+			anthReq.Tools[i] = anthropic.ToolDefinition{
+				Name:        tool.Function.Name,
+				Description: tool.Function.Description,
+				InputSchema: tool.Function.Parameters,
 			}
 		}
 	}
-	if chatReq.ReasoningEffort == "high" {
-		anthReq.Thinking = &ThinkingConfig{Type: "enabled", BudgetTokens: 16000}
+	if chatReq.ReasoningEffort != nil && *chatReq.ReasoningEffort == "high" {
+		anthReq.Thinking = &anthropic.ThinkingConfig{Type: "enabled", BudgetTokens: 16000}
 	}
 
 	anthBody, _ := json.Marshal(anthReq)
@@ -141,7 +144,7 @@ func (t *ChatToAnth) TranslateResponse(_ context.Context, upstream *http.Respons
 	}
 	upstream.Body.Close()
 
-	var anthResp AnthropicResponse
+	var anthResp anthropic.MessageResponse
 	if err := json.Unmarshal(body, &anthResp); err != nil {
 		return nil, err
 	}
@@ -153,26 +156,33 @@ func (t *ChatToAnth) TranslateResponse(_ context.Context, upstream *http.Respons
 		}
 	}
 
-	msg := ChatMessage{Role: "assistant"}
+	msg := chat.ChatCompletionMessage{Role: "assistant"}
+	var msgContent string
 	for _, c := range anthResp.Content {
 		switch c.Type {
 		case "text":
-			msg.Content = c.Text
+			msgContent = c.Text
 		case "tool_use":
 			args, _ := json.Marshal(c.Input)
-			msg.ToolCalls = append(msg.ToolCalls, ChatToolCall{
-				ID:       c.ID,
-				Type:     "function",
-				Function: session.FunctionCall{Name: c.Name, Arguments: string(args)},
+			msg.ToolCalls = append(msg.ToolCalls, chat.ChatCompletionMessageToolCall{
+				ID:   c.ID,
+				Type: "function",
+				Function: chat.ChatCompletionToolCallFunction{
+					Name:      c.Name,
+					Arguments: string(args),
+				},
 			})
 		}
 	}
+	if msgContent != "" {
+		msg.Content = &chat.ChatCompletionMessageContent{String: &msgContent}
+	}
 
-	chatResp := &ChatResponse{
+	chatResp := &chat.ChatCompletion{
 		ID:     anthResp.ID,
 		Object: "chat.completion",
-		Choices: []ChatChoice{{Index: 0, Message: msg}},
-		Usage: &Usage{
+		Choices: []chat.ChatCompletionChoice{{Index: 0, Message: msg}},
+		Usage: &chat.CompletionUsage{
 			PromptTokens:     anthResp.Usage.InputTokens,
 			CompletionTokens: anthResp.Usage.OutputTokens,
 			TotalTokens:      anthResp.Usage.InputTokens + anthResp.Usage.OutputTokens,
@@ -180,6 +190,14 @@ func (t *ChatToAnth) TranslateResponse(_ context.Context, upstream *http.Respons
 	}
 	respBody, _ := json.Marshal(chatResp)
 	return &Response{StatusCode: 200, Body: respBody, ReasoningContent: reasoningContent}, nil
+}
+
+// contentString extracts a plain string from ChatCompletionMessageContent.
+func contentString(c *chat.ChatCompletionMessageContent) string {
+	if c == nil || c.String == nil {
+		return ""
+	}
+	return *c.String
 }
 
 func (t *ChatToAnth) UpdateSession(s *session.Session, _ *Request, resp *Response) {

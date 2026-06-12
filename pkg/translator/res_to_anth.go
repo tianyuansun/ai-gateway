@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/tianyuansun/ai-gateway/pkg/schema/anthropic"
+	"github.com/tianyuansun/ai-gateway/pkg/schema/responses"
 	"github.com/tianyuansun/ai-gateway/pkg/session"
 	"github.com/tianyuansun/ai-gateway/pkg/shared"
 )
@@ -14,7 +16,7 @@ import (
 type ResToAnth struct{}
 
 func (t *ResToAnth) TranslateRequest(_ context.Context, req *Request, s *session.Session) (*UpstreamRequest, error) {
-	var body ResponsesRequest
+	var body responses.ResponseRequest
 	if err := json.Unmarshal(req.Body, &body); err != nil {
 		return nil, err
 	}
@@ -38,47 +40,48 @@ func (t *ResToAnth) TranslateRequest(_ context.Context, req *Request, s *session
 	}, nil
 }
 
-func (t *ResToAnth) buildMessages(s *session.Session, body *ResponsesRequest) *AnthropicRequest {
-	req := &AnthropicRequest{
+func (t *ResToAnth) buildMessages(s *session.Session, body *responses.ResponseRequest) *anthropic.MessageRequest {
+	req := &anthropic.MessageRequest{
 		MaxTokens: 32768,
 	}
 
-	if body.Reasoning != nil && body.Reasoning.Effort == "high" {
-		req.Thinking = &ThinkingConfig{Type: "enabled", BudgetTokens: 16000}
+	if body.Reasoning != nil && body.Reasoning.Effort != nil && *body.Reasoning.Effort == "high" {
+		req.Thinking = &anthropic.ThinkingConfig{Type: "enabled", BudgetTokens: 16000}
 	}
 
 	// Rebuild full history from session when available (mirrors ResToChat pattern).
 	if s != nil && len(s.Messages) > 0 {
 		req.Messages = sessionToAnthropicMessagesWithReasoning(s.Messages, s.ReasoningRecords)
 	} else {
-		for _, item := range body.Input {
+		for _, item := range body.Input.Items {
 			switch item.Type {
 			case "message":
+				text := extractInputText(item.Content)
 				if item.Role == "system" || item.Role == "developer" {
-					req.System = item.extractText()
+					req.System = &anthropic.SystemContent{String: &text}
 				} else {
-					req.Messages = append(req.Messages, AnthropicMessage{
+					req.Messages = append(req.Messages, anthropic.MessageParam{
 						Role:    item.Role,
-						Content: []AnthropicContent{{Type: "text", Text: item.extractText()}},
+						Content: []anthropic.ContentBlockParam{{Type: "text", Text: text}},
 					})
 				}
 			case "function_call":
-				req.Messages = append(req.Messages, AnthropicMessage{
+				req.Messages = append(req.Messages, anthropic.MessageParam{
 					Role: "assistant",
-					Content: []AnthropicContent{{
+					Content: []anthropic.ContentBlockParam{{
 						Type:  "tool_use",
 						ID:    item.CallID,
 						Name:  item.Name,
-						Input: parseJSON(item.Arguments),
+						Input: json.RawMessage(item.Arguments),
 					}},
 				})
 			case "function_call_output":
-				req.Messages = append(req.Messages, AnthropicMessage{
+				req.Messages = append(req.Messages, anthropic.MessageParam{
 					Role: "user",
-					Content: []AnthropicContent{{
-						Type:        "tool_result",
-						ToolUseID:   item.CallID,
-						Content:     item.Output,
+					Content: []anthropic.ContentBlockParam{{
+						Type:      "tool_result",
+						ToolUseID: item.CallID,
+						Content:   item.Output,
 					}},
 				})
 			}
@@ -86,13 +89,12 @@ func (t *ResToAnth) buildMessages(s *session.Session, body *ResponsesRequest) *A
 	}
 
 	if len(body.Tools) > 0 {
-		req.Tools = make([]AnthropicTool, 0, len(body.Tools))
+		req.Tools = make([]anthropic.ToolDefinition, 0, len(body.Tools))
 		for _, tool := range body.Tools {
-			// Skip tools with empty names or null input schemas (invalid for Anthropic API).
-			if tool.Name == "" || tool.Parameters == nil {
+			if tool.Name == "" || len(tool.Parameters) == 0 {
 				continue
 			}
-			req.Tools = append(req.Tools, AnthropicTool{
+			req.Tools = append(req.Tools, anthropic.ToolDefinition{
 				Name:        tool.Name,
 				Description: tool.Description,
 				InputSchema: tool.Parameters,
@@ -103,61 +105,55 @@ func (t *ResToAnth) buildMessages(s *session.Session, body *ResponsesRequest) *A
 	return req
 }
 
-func sessionToAnthropicMessagesWithReasoning(msgs []session.Message, reasoningRecords []session.Reasoning) []AnthropicMessage {
-	var result []AnthropicMessage
+func sessionToAnthropicMessagesWithReasoning(msgs []session.Message, reasoningRecords []session.Reasoning) []anthropic.MessageParam {
+	var result []anthropic.MessageParam
 	for _, m := range msgs {
 		switch m.Role {
 		case "tool":
-			result = append(result, AnthropicMessage{
+			result = append(result, anthropic.MessageParam{
 				Role: "user",
-				Content: []AnthropicContent{{
+				Content: []anthropic.ContentBlockParam{{
 					Type:      "tool_result",
 					ToolUseID: m.ToolCallID,
 					Content:   m.Content,
 				}},
 			})
 		case "assistant":
-			var content []AnthropicContent
+			var content []anthropic.ContentBlockParam
 			if m.Content != "" {
-				content = append(content, AnthropicContent{Type: "text", Text: m.Content})
+				content = append(content, anthropic.ContentBlockParam{Type: "text", Text: m.Content})
 			}
 			for _, tc := range m.ToolCalls {
-				content = append(content, AnthropicContent{
+				content = append(content, anthropic.ContentBlockParam{
 					Type:  "tool_use",
 					ID:    tc.ID,
 					Name:  tc.Function.Name,
-					Input: parseJSON(tc.Function.Arguments),
+					Input: json.RawMessage(tc.Function.Arguments),
 				})
 			}
-			result = append(result, AnthropicMessage{Role: "assistant", Content: content})
+			result = append(result, anthropic.MessageParam{Role: "assistant", Content: content})
 		default:
-			result = append(result, AnthropicMessage{
+			result = append(result, anthropic.MessageParam{
 				Role:    m.Role,
-				Content: []AnthropicContent{{Type: "text", Text: m.Content}},
+				Content: []anthropic.ContentBlockParam{{Type: "text", Text: m.Content}},
 			})
 		}
 	}
 	// Inject reasoning as thinking blocks into the last assistant message.
 	if len(reasoningRecords) > 0 {
+		thinking := reasoningRecords[len(reasoningRecords)-1].Content
 		for i := len(result) - 1; i >= 0; i-- {
 			if result[i].Role == "assistant" {
-				thinkingBlock := AnthropicContent{
-					Type:      "thinking",
-					Thinking:  reasoningRecords[len(reasoningRecords)-1].Content,
-					Signature: "",
+				thinkingBlock := anthropic.ContentBlockParam{
+					Type:     "thinking",
+					Thinking: thinking,
 				}
-				result[i].Content = append([]AnthropicContent{thinkingBlock}, result[i].Content...)
+				result[i].Content = append([]anthropic.ContentBlockParam{thinkingBlock}, result[i].Content...)
 				break
 			}
 		}
 	}
 	return result
-}
-
-func parseJSON(s string) any {
-	var v any
-	json.Unmarshal([]byte(s), &v)
-	return v
 }
 
 func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Request, _ *session.Session) <-chan SSEEvent {
@@ -270,7 +266,8 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 						"item": map[string]any{
 							"id": responseID + "_item",
 							"type": "message",
-							"role": "assistant", "status": "completed",
+							"role": "assistant",
+							"status": "completed",
 						},
 					})
 					ch <- SSEEvent{Event: "response.output_item.done", Data: itemDone}
@@ -305,7 +302,7 @@ func (t *ResToAnth) TranslateResponse(_ context.Context, upstream *http.Response
 	}
 	upstream.Body.Close()
 
-	var anthResp AnthropicResponse
+	var anthResp anthropic.MessageResponse
 	if err := json.Unmarshal(body, &anthResp); err != nil {
 		return nil, err
 	}
@@ -323,20 +320,20 @@ func (t *ResToAnth) TranslateResponse(_ context.Context, upstream *http.Response
 	return &Response{StatusCode: 200, Body: respBody, ReasoningContent: reasoningContent}, nil
 }
 
-func (t *ResToAnth) convertToResponse(anthResp *AnthropicResponse) *ResponsesResponse {
-	output := []OutputItem{}
+func (t *ResToAnth) convertToResponse(anthResp *anthropic.MessageResponse) *responses.Response {
+	output := []responses.ResponseOutputItem{}
 
 	for _, c := range anthResp.Content {
 		switch c.Type {
 		case "text":
-			output = append(output, OutputItem{
+			output = append(output, responses.ResponseOutputItem{
 				Type: "message",
 				Role: "assistant",
-				Content: []ContentPart{{Type: "output_text", Text: c.Text}},
+				Content: []responses.ResponseContentPart{{Type: "output_text", Text: c.Text}},
 			})
 		case "tool_use":
 			args, _ := json.Marshal(c.Input)
-			output = append(output, OutputItem{
+			output = append(output, responses.ResponseOutputItem{
 				Type:      "function_call",
 				CallID:    c.ID,
 				Name:      c.Name,
@@ -345,7 +342,7 @@ func (t *ResToAnth) convertToResponse(anthResp *AnthropicResponse) *ResponsesRes
 		}
 	}
 
-	return &ResponsesResponse{
+	return &responses.Response{
 		ID:     anthResp.ID,
 		Object: "response",
 		Output: output,
@@ -353,15 +350,40 @@ func (t *ResToAnth) convertToResponse(anthResp *AnthropicResponse) *ResponsesRes
 	}
 }
 
-func (t *ResToAnth) convertUsage(u *AnthropicUsage) *Usage {
-	if u == nil {
-		return nil
+func (t *ResToAnth) convertUsage(u anthropic.Usage) *responses.ResponseUsage {
+	return &responses.ResponseUsage{
+		InputTokens:  u.InputTokens,
+		OutputTokens: u.OutputTokens,
+		TotalTokens:  u.InputTokens + u.OutputTokens,
 	}
-	return &Usage{
-		PromptTokens:     u.InputTokens,
-		CompletionTokens: u.OutputTokens,
-		TotalTokens:      u.InputTokens + u.OutputTokens,
+}
+
+// extractInputText extracts text content from a ResponseInputItem's Content field,
+// which can be a plain string or an array of content parts.
+func extractInputText(content json.RawMessage) string {
+	if len(content) == 0 {
+		return ""
 	}
+	// Try as string first.
+	var s string
+	if json.Unmarshal(content, &s) == nil {
+		return s
+	}
+	// Try as array of content parts.
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(content, &parts) == nil {
+		var text string
+		for _, p := range parts {
+			if p.Text != "" {
+				text += p.Text
+			}
+		}
+		return text
+	}
+	return ""
 }
 
 func (t *ResToAnth) UpdateSession(s *session.Session, _ *Request, resp *Response) {
@@ -370,57 +392,4 @@ func (t *ResToAnth) UpdateSession(s *session.Session, _ *Request, resp *Response
 			Content: resp.ReasoningContent,
 		})
 	}
-}
-
-// --- Anthropic types ---
-
-type AnthropicRequest struct {
-	Model     string             `json:"model"`
-	System    string             `json:"system,omitempty"`
-	Messages  []AnthropicMessage `json:"messages"`
-	Tools     []AnthropicTool    `json:"tools,omitempty"`
-	MaxTokens int                `json:"max_tokens"`
-	Stream    bool               `json:"stream,omitempty"`
-	Thinking  *ThinkingConfig    `json:"thinking,omitempty"`
-}
-
-type AnthropicMessage struct {
-	Role    string             `json:"role"`
-	Content []AnthropicContent `json:"content"`
-}
-
-type AnthropicContent struct {
-	Type      string `json:"type"`
-	Text      string `json:"text,omitempty"`
-	Thinking  string `json:"thinking,omitempty"`
-	Signature string `json:"signature,omitempty"`
-	ID        string `json:"id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Input     any    `json:"input,omitempty"`
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"`
-}
-
-type AnthropicTool struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	InputSchema any    `json:"input_schema"`
-}
-
-type ThinkingConfig struct {
-	Type         string `json:"type"`
-	BudgetTokens int    `json:"budget_tokens"`
-}
-
-type AnthropicResponse struct {
-	ID      string             `json:"id"`
-	Type    string             `json:"type"`
-	Role    string             `json:"role"`
-	Content []AnthropicContent `json:"content"`
-	Usage   *AnthropicUsage    `json:"usage,omitempty"`
-}
-
-type AnthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
 }
