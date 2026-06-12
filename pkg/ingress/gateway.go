@@ -2,6 +2,8 @@ package ingress
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,7 +36,7 @@ type translatorKey struct {
 }
 
 func NewGateway(cfg *config.Config) *Gateway {
-	sessStore := session.NewMemoryStore(10000, 3600)
+	sessStore := session.NewMemoryStore(10000, 3600*time.Second)
 	checker := provider.NewHealthChecker(30)
 	sel := router.NewProviderSelector(cfg, sessStore, checker)
 
@@ -111,6 +113,9 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 	}
 
 	sessionID := extractSessionID(r, body, apiFormat)
+	if sessionID == "" {
+		sessionID = generateSessionID()
+	}
 
 	prov, provID, err := gw.selector.Select(model, sessionID)
 	if err != nil {
@@ -128,8 +133,8 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 	if sessionID != "" {
 		sess, _ = gw.sessions.Get(sessionID)
 	}
-	if sess == nil && sessionID != "" {
-		sess = &session.Session{ID: sessionID, TTL: 3600}
+	if sess == nil {
+		sess = &session.Session{ID: sessionID, TTL: 3600 * time.Second}
 	}
 
 	tReq := &translator.Request{
@@ -178,10 +183,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 		gw.sessions.Set(sess.ID, sess)
 	}
 
-	if newSessionID := gwResp.Headers["X-Session-Id"]; newSessionID != "" {
-		w.Header().Set("X-Session-Id", newSessionID)
-	}
-
+	w.Header().Set("X-Session-Id", sessionID)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(gwResp.StatusCode)
 	w.Write(gwResp.Body)
@@ -237,6 +239,12 @@ func extractSessionID(r *http.Request, body []byte, apiFormat translator.APIForm
 		}
 	}
 	return ""
+}
+
+func generateSessionID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return "gw-" + hex.EncodeToString(b)
 }
 
 func flattenHeaders(h http.Header) map[string]string {
