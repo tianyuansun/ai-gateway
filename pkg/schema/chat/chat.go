@@ -125,13 +125,14 @@ type ChatCompletionResponseFormatJSONSchema struct {
 // ChatCompletionMessage represents a message in the conversation.
 // Used for both request messages and response message objects.
 type ChatCompletionMessage struct {
-	Role         string                          `json:"role"`
-	Content      *ChatCompletionMessageContent   `json:"content"`
-	Refusal      *string                         `json:"refusal,omitempty"`
-	ToolCalls    []ChatCompletionMessageToolCall `json:"tool_calls,omitempty"`
-	Name         string                          `json:"name,omitempty"`
-	ToolCallID   string                          `json:"tool_call_id,omitempty"`
-	FunctionCall *ChatCompletionFunctionCall     `json:"function_call,omitempty"`
+	Role             string                          `json:"role"`
+	Content          *ChatCompletionMessageContent   `json:"content"`
+	ReasoningContent string                          `json:"reasoning_content,omitempty"`
+	Refusal          *string                         `json:"refusal,omitempty"`
+	ToolCalls        []ChatCompletionMessageToolCall `json:"tool_calls,omitempty"`
+	Name             string                          `json:"name,omitempty"`
+	ToolCallID       string                          `json:"tool_call_id,omitempty"`
+	FunctionCall     *ChatCompletionFunctionCall     `json:"function_call,omitempty"`
 }
 
 // ChatCompletionStreamDelta is the delta in a streaming chunk choice.

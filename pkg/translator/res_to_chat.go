@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/tianyuansun/ai-gateway/pkg/schema/chat"
+	"github.com/tianyuansun/ai-gateway/pkg/schema/responses"
 	"github.com/tianyuansun/ai-gateway/pkg/session"
 	"github.com/tianyuansun/ai-gateway/pkg/shared"
 )
@@ -14,23 +16,32 @@ import (
 type ResToChat struct{}
 
 func (t *ResToChat) TranslateRequest(_ context.Context, req *Request, s *session.Session) (*UpstreamRequest, error) {
-	var body ResponsesRequest
+	var body responses.ResponseRequest
 	if err := json.Unmarshal(req.Body, &body); err != nil {
 		return nil, err
 	}
 
-	// Rebuild full message history from session
 	messages := t.rebuildMessages(s, &body)
 
-	chatReq := ChatRequest{
+	chatReq := chat.ChatCompletionRequest{
 		Model:    req.Model,
 		Messages: messages,
 		Stream:   true,
 	}
 	if len(body.Tools) > 0 {
-		chatReq.Tools = body.Tools
+		chatReq.Tools = make([]chat.ChatCompletionTool, len(body.Tools))
+		for i, tool := range body.Tools {
+			chatReq.Tools[i] = chat.ChatCompletionTool{
+				Type: "function",
+				Function: chat.FunctionDefinition{
+					Name:        tool.Name,
+					Description: tool.Description,
+					Parameters:  tool.Parameters,
+				},
+			}
+		}
 	}
-	if body.Reasoning != nil {
+	if body.Reasoning != nil && body.Reasoning.Effort != nil {
 		chatReq.ReasoningEffort = body.Reasoning.Effort
 	}
 
@@ -49,55 +60,62 @@ func (t *ResToChat) TranslateRequest(_ context.Context, req *Request, s *session
 	}, nil
 }
 
-func (t *ResToChat) rebuildMessages(s *session.Session, body *ResponsesRequest) []ChatMessage {
+func (t *ResToChat) rebuildMessages(s *session.Session, body *responses.ResponseRequest) []chat.ChatCompletionMessage {
 	if s != nil && len(s.Messages) > 0 {
 		return t.sessionMessages(s)
 	}
 
-	msgs := make([]ChatMessage, 0, len(body.Input))
-	for _, item := range body.Input {
+	msgs := make([]chat.ChatCompletionMessage, 0, len(body.Input.Items))
+	for _, item := range body.Input.Items {
 		switch item.Type {
 		case "message":
-			msgs = append(msgs, ChatMessage{
+			text := extractInputText(item.Content)
+			msgs = append(msgs, chat.ChatCompletionMessage{
 				Role:    item.Role,
-				Content: item.extractText(),
+				Content: &chat.ChatCompletionMessageContent{String: &text},
 			})
 		case "function_call":
-			msgs = append(msgs, ChatMessage{
+			msgs = append(msgs, chat.ChatCompletionMessage{
 				Role: "assistant",
-				ToolCalls: []ChatToolCall{{
-					ID:       item.CallID,
-					Type:     "function",
-					Function: item.Function,
+				ToolCalls: []chat.ChatCompletionMessageToolCall{{
+					ID:   item.CallID,
+					Type: "function",
+					Function: chat.ChatCompletionToolCallFunction{
+						Name:      item.Name,
+						Arguments: item.Arguments,
+					},
 				}},
 			})
 		case "function_call_output":
-			msgs = append(msgs, ChatMessage{
+			msgs = append(msgs, chat.ChatCompletionMessage{
 				Role:       "tool",
 				ToolCallID: item.CallID,
-				Content:    item.Output,
+				Content:    &chat.ChatCompletionMessageContent{String: &item.Output},
 			})
 		}
 	}
 	return msgs
 }
 
-func (t *ResToChat) sessionMessages(s *session.Session) []ChatMessage {
-	msgs := make([]ChatMessage, len(s.Messages))
+func (t *ResToChat) sessionMessages(s *session.Session) []chat.ChatCompletionMessage {
+	msgs := make([]chat.ChatCompletionMessage, len(s.Messages))
 	for i, m := range s.Messages {
-		msgs[i] = ChatMessage{
+		msgs[i] = chat.ChatCompletionMessage{
 			Role:       m.Role,
-			Content:    m.Content,
+			Content:    &chat.ChatCompletionMessageContent{String: &m.Content},
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
 		}
 		if len(m.ToolCalls) > 0 {
-			msgs[i].ToolCalls = make([]ChatToolCall, len(m.ToolCalls))
+			msgs[i].ToolCalls = make([]chat.ChatCompletionMessageToolCall, len(m.ToolCalls))
 			for j, tc := range m.ToolCalls {
-				msgs[i].ToolCalls[j] = ChatToolCall{
-					ID:       tc.ID,
-					Type:     tc.Type,
-					Function: tc.Function,
+				msgs[i].ToolCalls[j] = chat.ChatCompletionMessageToolCall{
+					ID:   tc.ID,
+					Type: tc.Type,
+					Function: chat.ChatCompletionToolCallFunction{
+						Name:      tc.Function.Name,
+						Arguments: tc.Function.Arguments,
+					},
 				}
 			}
 		}
@@ -225,7 +243,6 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 				}
 			}
 		}
-		// Final completed event if not already sent.
 		if started && !completed {
 			lastData, _ := json.Marshal(map[string]any{
 				"type": "response.completed",
@@ -246,12 +263,11 @@ func (t *ResToChat) TranslateResponse(_ context.Context, upstream *http.Response
 	}
 	upstream.Body.Close()
 
-	var chatResp ChatResponse
+	var chatResp chat.ChatCompletion
 	if err := json.Unmarshal(body, &chatResp); err != nil {
 		return nil, err
 	}
 
-	// Extract reasoning_content from the raw JSON (not in ChatResponse struct).
 	reasoningContent := extractReasoningContent(body)
 
 	resp := t.convertToResponse(&chatResp)
@@ -264,61 +280,58 @@ func (t *ResToChat) TranslateResponse(_ context.Context, upstream *http.Response
 	return &Response{StatusCode: 200, Body: respBody, ReasoningContent: reasoningContent}, nil
 }
 
-// extractReasoningContent extracts reasoning_content from a Chat Completions response.
-func extractReasoningContent(body []byte) string {
-	var raw struct {
-		Choices []struct {
-			Message struct {
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return ""
-	}
-	if len(raw.Choices) > 0 {
-		return raw.Choices[0].Message.ReasoningContent
-	}
-	return ""
-}
-
-func (t *ResToChat) convertToResponse(chatResp *ChatResponse) *ResponsesResponse {
+func (t *ResToChat) convertToResponse(chatResp *chat.ChatCompletion) *responses.Response {
 	msg := chatResp.Choices[0].Message
 
-	output := []OutputItem{}
-	if msg.Content != "" {
-		output = append(output, OutputItem{
+	output := []responses.ResponseOutputItem{}
+	if msg.Content != nil && msg.Content.String != nil {
+		output = append(output, responses.ResponseOutputItem{
 			Type: "message",
 			Role: "assistant",
-			Content: []ContentPart{{Type: "output_text", Text: msg.Content}},
+			Content: []responses.ResponseContentPart{{
+				Type: "output_text",
+				Text: *msg.Content.String,
+			}},
 		})
 	}
 	for _, tc := range msg.ToolCalls {
-		args, _ := json.Marshal(tc.Function.Arguments)
-		output = append(output, OutputItem{
+		output = append(output, responses.ResponseOutputItem{
 			Type:      "function_call",
 			CallID:    tc.ID,
 			Name:      tc.Function.Name,
-			Arguments: string(args),
+			Arguments: tc.Function.Arguments,
 		})
 	}
 
-	return &ResponsesResponse{
+	return &responses.Response{
 		ID:     chatResp.ID,
 		Object: "response",
 		Output: output,
-		Usage:  chatResp.Usage,
+		Usage:  t.convertUsage(chatResp.Usage),
 	}
 }
 
-func (t *ResToChat) appendToSession(s *session.Session, chatResp *ChatResponse) {
+func (t *ResToChat) convertUsage(u *chat.CompletionUsage) *responses.ResponseUsage {
+	if u == nil {
+		return nil
+	}
+	return &responses.ResponseUsage{
+		InputTokens:  u.PromptTokens,
+		OutputTokens: u.CompletionTokens,
+		TotalTokens:  u.TotalTokens,
+	}
+}
+
+func (t *ResToChat) appendToSession(s *session.Session, chatResp *chat.ChatCompletion) {
 	msg := chatResp.Choices[0].Message
 	s.Messages = append(s.Messages, session.Message{
-		Role:    "assistant",
-		Content: msg.Content,
+		Role: "assistant",
 	})
+	last := &s.Messages[len(s.Messages)-1]
+	if msg.Content != nil && msg.Content.String != nil {
+		last.Content = *msg.Content.String
+	}
 	if len(msg.ToolCalls) > 0 {
-		last := &s.Messages[len(s.Messages)-1]
 		last.Content = ""
 		last.ToolCalls = make([]session.ToolCall, len(msg.ToolCalls))
 		for i, tc := range msg.ToolCalls {
@@ -339,105 +352,20 @@ func (t *ResToChat) UpdateSession(s *session.Session, _ *Request, resp *Response
 	}
 }
 
-// --- Request/Response types ---
-
-type ResponsesRequest struct {
-	Model               string        `json:"model"`
-	Input               []InputItem   `json:"input"`
-	Tools               []Tool        `json:"tools,omitempty"`
-	PreviousResponseID  string        `json:"previous_response_id,omitempty"`
-	Reasoning           *Reasoning    `json:"reasoning,omitempty"`
-}
-
-type InputItem struct {
-	Type      string        `json:"type"`
-	Role      string        `json:"role,omitempty"`
-	Content   []ContentPart `json:"content,omitempty"`
-	CallID    string        `json:"call_id,omitempty"`
-	Name      string        `json:"name,omitempty"`
-	Arguments string        `json:"arguments,omitempty"`
-	Output    string        `json:"output,omitempty"`
-	Function  session.FunctionCall `json:"function,omitempty"`
-}
-
-func (item InputItem) extractText() string {
-	for _, c := range item.Content {
-		if c.Text != "" {
-			return c.Text
-		}
+// extractReasoningContent extracts reasoning_content from a Chat Completions response.
+func extractReasoningContent(body []byte) string {
+	var raw struct {
+		Choices []struct {
+			Message struct {
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return ""
+	}
+	if len(raw.Choices) > 0 {
+		return raw.Choices[0].Message.ReasoningContent
 	}
 	return ""
-}
-
-type ContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-}
-
-type Tool struct {
-	Type     string `json:"type"`
-	Name     string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Parameters any    `json:"parameters,omitempty"`
-}
-
-type Reasoning struct {
-	Effort string `json:"effort"`
-}
-
-type ChatRequest struct {
-	Model           string        `json:"model"`
-	Messages        []ChatMessage `json:"messages"`
-	Tools           []Tool        `json:"tools,omitempty"`
-	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
-	Stream          bool          `json:"stream,omitempty"`
-}
-
-type ChatMessage struct {
-	Role             string          `json:"role"`
-	Content          string          `json:"content,omitempty"`
-	ReasoningContent string          `json:"reasoning_content,omitempty"`
-	ToolCalls        []ChatToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID       string          `json:"tool_call_id,omitempty"`
-	Name             string          `json:"name,omitempty"`
-}
-
-type ChatToolCall struct {
-	ID       string              `json:"id"`
-	Type     string              `json:"type"`
-	Function session.FunctionCall `json:"function"`
-}
-
-type ChatResponse struct {
-	ID      string       `json:"id"`
-	Object  string       `json:"object"`
-	Choices []ChatChoice `json:"choices"`
-	Usage   *Usage       `json:"usage,omitempty"`
-}
-
-type ChatChoice struct {
-	Index   int         `json:"index"`
-	Message ChatMessage `json:"message"`
-}
-
-type ResponsesResponse struct {
-	ID     string       `json:"id"`
-	Object string       `json:"object"`
-	Output []OutputItem `json:"output"`
-	Usage  *Usage       `json:"usage,omitempty"`
-}
-
-type OutputItem struct {
-	Type      string        `json:"type"`
-	Role      string        `json:"role,omitempty"`
-	Content   []ContentPart `json:"content,omitempty"`
-	CallID    string        `json:"call_id,omitempty"`
-	Name      string        `json:"name,omitempty"`
-	Arguments string        `json:"arguments,omitempty"`
-}
-
-type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
 }
