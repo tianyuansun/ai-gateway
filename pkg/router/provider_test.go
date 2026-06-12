@@ -75,6 +75,78 @@ func TestSelectPrioritySkipsUnhealthy(t *testing.T) {
 	}
 }
 
+func TestSelectRandomDistribution(t *testing.T) {
+	cfg := &config.Config{
+		Providers: map[string]config.Provider{
+			"p1": {Endpoints: config.ProviderEndpoints{Chat: "http://p1"}},
+			"p2": {Endpoints: config.ProviderEndpoints{Chat: "http://p2"}},
+			"p3": {Endpoints: config.ProviderEndpoints{Chat: "http://p3"}},
+		},
+	}
+
+	checker := provider.NewHealthChecker(30)
+	checker.SetHealth("p1", true)
+	checker.SetHealth("p2", true)
+	checker.SetHealth("p3", true)
+
+	selector := NewProviderSelector(cfg, nil, checker)
+
+	model := &config.Model{
+		Routing: &config.RoutingConfig{Strategy: "random"},
+		Providers: []config.ModelProvider{
+			{Provider: "p1", Priority: 1},
+			{Provider: "p2", Priority: 1},
+			{Provider: "p3", Priority: 1},
+		},
+	}
+
+	counts := map[string]int{"p1": 0, "p2": 0, "p3": 0}
+	const iterations = 300
+	for range iterations {
+		_, provID, err := selector.Select(model, "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		counts[provID]++
+	}
+
+	// With 300 iterations and 3 providers, each should get roughly 100 selections.
+	// Allow ±40% tolerance to avoid flaky tests.
+	for id, count := range counts {
+		if count < 60 || count > 140 {
+			t.Errorf("provider %s got %d/%d selections (expected ~100, range 60-140)", id, count, iterations)
+		}
+	}
+}
+
+func TestSelectRandomAllUnhealthyReturnsError(t *testing.T) {
+	cfg := &config.Config{
+		Providers: map[string]config.Provider{
+			"p1": {Endpoints: config.ProviderEndpoints{Chat: "http://p1"}},
+			"p2": {Endpoints: config.ProviderEndpoints{Chat: "http://p2"}},
+		},
+	}
+
+	checker := provider.NewHealthChecker(30)
+	checker.SetHealth("p1", false)
+	checker.SetHealth("p2", false)
+
+	selector := NewProviderSelector(cfg, nil, checker)
+
+	model := &config.Model{
+		Routing: &config.RoutingConfig{Strategy: "random"},
+		Providers: []config.ModelProvider{
+			{Provider: "p1", Priority: 1},
+			{Provider: "p2", Priority: 1},
+		},
+	}
+
+	_, _, err := selector.Select(model, "")
+	if err == nil {
+		t.Fatal("expected error when all providers unhealthy, got nil")
+	}
+}
+
 func TestSelectAllUnhealthyReturnsError(t *testing.T) {
 	cfg := &config.Config{
 		Providers: map[string]config.Provider{
