@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -38,7 +39,19 @@ type translatorKey struct {
 }
 
 func NewGateway(cfg *config.Config) *Gateway {
-	sessStore := session.NewMemoryStore(10000, 3600*time.Second)
+	var sessStore session.Store
+	ttl := time.Duration(cfg.Server.Session.TTLSeconds) * time.Second
+	if cfg.Server.Session.Backend == "sqlite" {
+		sqliteStore, err := session.NewSQLiteStore(cfg.Server.Session.SQLitePath, ttl)
+		if err != nil {
+			log.Printf("[gateway] sqlite session store error (%v), falling back to memory", err)
+			sessStore = session.NewMemoryStore(10000, ttl)
+		} else {
+			sessStore = sqliteStore
+		}
+	} else {
+		sessStore = session.NewMemoryStore(10000, ttl)
+	}
 	checker := provider.NewHealthChecker(30)
 	sel := router.NewProviderSelector(cfg, sessStore, checker)
 
