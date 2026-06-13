@@ -5,7 +5,7 @@
 - **Provider** — an upstream LLM service (e.g. DeepSeek, OpenRouter, Anthropic). Each provider exposes one or more endpoints in a *native format*.
 - **Native format** — the API format a provider accepts natively (Chat or Anthropic). The gateway translates the exposed format to the native format when they differ.
 - **Translator** — a component that converts requests and responses between an exposed format and a native format. Includes a *PassthroughTranslator* that returns data unchanged when the two formats match.
-- **Session** — holds cross-turn state: message history, selected provider binding, reasoning records.
+- **Session** — holds cross-turn state: message history (rebuilt from agent request body each turn), selected provider binding (for session affinity), and reasoning records (the only field that cannot be reconstructed from the agent's request — coding agents do not send reasoning content back). The `session.Store` interface (Get/Set/Delete/Prune) supports pluggable backends: `MemoryStore` (current, in-process LRU), `SQLiteStore` (single-file durable, for surviving restarts), and `RedisStore` (future, for distributed deployments).
 - **Request log buffer** — a per-request ring buffer of structured log records, carried via `context.Context`. Drained (flushed to output) when a *trigger condition* fires; otherwise discarded.
 - **Trigger condition** — a rule that causes a request's buffered logs to be flushed: error response, upstream failure, latency exceeding a threshold, client cancellation, or explicit debug header (`X-Debug: true`).
 - **Log level** — controls the minimum severity that enters the buffer: `debug`, `info`, `warn`, `error`. Global default + per-request override via `X-Debug` header.

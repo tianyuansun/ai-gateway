@@ -24,6 +24,7 @@ type SessionConfig struct {
 	TTLSeconds int    `yaml:"ttl_seconds"`
 	Backend    string `yaml:"backend"`
 	KeySource  string `yaml:"key_source"`
+	SQLitePath string `yaml:"sqlite_path"`
 }
 
 type Provider struct {
@@ -95,6 +96,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Server.Session.KeySource == "" {
 		c.Server.Session.KeySource = "auto"
+	}
+	if c.Server.Session.SQLitePath == "" {
+		c.Server.Session.SQLitePath = "gateway-sessions.db"
 	}
 	for name, model := range c.Models {
 		if model.Routing == nil {
