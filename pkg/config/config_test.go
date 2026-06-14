@@ -287,3 +287,61 @@ func TestProviderAPIKeyEmptyEnv(t *testing.T) {
 		t.Errorf("expected empty string, got %q", key)
 	}
 }
+
+func TestProviderEndpoints_ResponsesField(t *testing.T) {
+	yamlData := `
+server: {}
+providers:
+  openai-responses:
+    endpoints:
+      responses: "https://api.openai.com/v1/responses"
+models: {}
+`
+	filePath := "/tmp/test_responses_endpoint.yaml"
+	if err := os.WriteFile(filePath, []byte(yamlData), 0644); err != nil {
+		t.Fatalf("failed to write temp config file: %v", err)
+	}
+	defer os.Remove(filePath)
+
+	cfg, err := Load(filePath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	p, ok := cfg.Providers["openai-responses"]
+	if !ok {
+		t.Fatal("expected 'openai-responses' provider")
+	}
+	if p.Endpoints.Responses != "https://api.openai.com/v1/responses" {
+		t.Errorf("expected Responses endpoint 'https://api.openai.com/v1/responses', got %q", p.Endpoints.Responses)
+	}
+}
+
+func TestProviderEndpoints_ResponsesEmptyDefault(t *testing.T) {
+	yamlData := `
+server: {}
+providers:
+  p1:
+    endpoints:
+      chat: "http://p1"
+models: {}
+`
+	filePath := "/tmp/test_responses_default.yaml"
+	if err := os.WriteFile(filePath, []byte(yamlData), 0644); err != nil {
+		t.Fatalf("failed to write temp config file: %v", err)
+	}
+	defer os.Remove(filePath)
+
+	cfg, err := Load(filePath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	p, ok := cfg.Providers["p1"]
+	if !ok {
+		t.Fatal("expected 'p1' provider")
+	}
+	if p.Endpoints.Responses != "" {
+		t.Errorf("expected empty Responses endpoint by default, got %q", p.Endpoints.Responses)
+	}
+}

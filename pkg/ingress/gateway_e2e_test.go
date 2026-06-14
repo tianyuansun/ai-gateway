@@ -241,3 +241,79 @@ func TestE2E_ResponsesAPINonStreaming(t *testing.T) {
 		t.Errorf("expected object='response', got %v", respBody["object"])
 	}
 }
+
+func TestE2E_AnthToResTranslatorRegistered(t *testing.T) {
+	// Set up an upstream server that handles Responses API requests and returns
+	// Responses API SSE events.
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`data: {"type":"response.created","response":{"id":"resp_1","object":"response"}}`,
+			`data: {"type":"response.in_progress","response":{"id":"resp_1","object":"response"}}`,
+			`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"resp_1_item","type":"message","role":"assistant","status":"in_progress"}}`,
+			`data: {"type":"response.content_part.added","item_id":"resp_1_item","output_index":0,"content_index":0,"part":{"type":"output_text","text":""}}`,
+			`data: {"type":"response.output_text.delta","item_id":"resp_1_item","output_index":0,"content_index":0,"delta":"Hello from responses"}`,
+			`data: {"type":"response.content_part.done","item_id":"resp_1_item","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Hello from responses"}}`,
+			`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"resp_1_item","type":"message","role":"assistant","status":"completed"}}`,
+			`data: {"type":"response.completed","response":{"id":"resp_1","object":"response"}}`,
+		}
+		for _, chunk := range chunks {
+			w.Write([]byte(chunk + "\n\n"))
+			flusher.Flush()
+		}
+	}))
+	defer upstreamServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: "127.0.0.1:0"},
+		Providers: map[string]config.Provider{
+			"p-responses": {Endpoints: config.ProviderEndpoints{Responses: upstreamServer.URL}},
+		},
+		Models: map[string]config.Model{
+			"test-model": {
+				Routing: &config.RoutingConfig{Strategy: "priority"},
+				Providers: []config.ModelProvider{
+					{Provider: "p-responses", Priority: 1},
+				},
+			},
+		},
+	}
+
+	gw := NewGateway(cfg)
+	gw.health.SetHealth("p-responses", true)
+
+	// Send an Anthropic Messages API request. The gateway should use the
+	// AnthToRes translator since the provider has only a Responses endpoint.
+	body := `{"model":"test-model","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":100,"stream":true}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	gw.ServeMessages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify SSE content type.
+	ct := rec.Header().Get("Content-Type")
+	if ct != "text/event-stream" {
+		t.Fatalf("expected text/event-stream, got %s", ct)
+	}
+
+	// Verify we get Anthropic-style SSE events (message_start, content_block_delta, etc.).
+	bodyStr := rec.Body.String()
+	if !strings.Contains(bodyStr, "message_start") {
+		t.Error("expected message_start in response")
+	}
+	if !strings.Contains(bodyStr, "content_block_delta") {
+		t.Error("expected content_block_delta in response")
+	}
+	if !strings.Contains(bodyStr, "message_stop") {
+		t.Error("expected message_stop in response")
+	}
+	if !strings.Contains(bodyStr, "Hello from responses") {
+		t.Error("expected 'Hello from responses' in response body")
+	}
+}
