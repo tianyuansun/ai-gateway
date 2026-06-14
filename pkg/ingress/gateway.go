@@ -68,6 +68,7 @@ func NewGateway(cfg *config.Config) *Gateway {
 	gw.translators[translatorKey{"responses", "chat"}] = &translator.ResToChat{}
 	gw.translators[translatorKey{"responses", "anthropic"}] = &translator.ResToAnth{}
 	gw.translators[translatorKey{"anthropic", "chat"}] = &translator.AnthToChat{}
+	gw.translators[translatorKey{"anthropic", "responses"}] = &translator.AnthToRes{}
 	gw.translators[translatorKey{"chat", "anthropic"}] = &translator.ChatToAnth{}
 
 	return gw
@@ -216,6 +217,9 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat
 	baseURL := prov.Endpoints.Chat
 	if strings.Contains(endpoint, "/messages") {
 		baseURL = prov.Endpoints.Anthropic
+	}
+	if strings.Contains(endpoint, "/responses") {
+		baseURL = prov.Endpoints.Responses
 	}
 	if baseURL == "" {
 		baseURL = prov.Endpoints.Chat
@@ -408,6 +412,9 @@ func (gw *Gateway) resolveTranslator(apiFormat translator.APIFormat, prov *confi
 	case translator.FormatAnthropic:
 		if prov.Endpoints.Anthropic != "" {
 			return &translator.PassthroughTranslator{}, "/messages"
+		}
+		if prov.Endpoints.Responses != "" {
+			return gw.translators[translatorKey{"anthropic", "responses"}], "/responses"
 		}
 		return gw.translators[translatorKey{"anthropic", "chat"}], "/chat/completions"
 

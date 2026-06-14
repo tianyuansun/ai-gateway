@@ -35,6 +35,7 @@ type Provider struct {
 type ProviderEndpoints struct {
 	Chat      string `yaml:"chat"`
 	Anthropic string `yaml:"anthropic"`
+	Responses string `yaml:"responses"`
 }
 
 type Model struct {
