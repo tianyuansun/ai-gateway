@@ -49,6 +49,7 @@ func main() {
 	mux.Handle("/health", healthHandler)
 
 	mux.Handle("/admin/log-level", logging.AdminHandler())
+	mux.HandleFunc("/v1/responses/compact", gw.ServeCompact)
 
 	server := &http.Server{
 		Addr:    cfg.Server.Listen,

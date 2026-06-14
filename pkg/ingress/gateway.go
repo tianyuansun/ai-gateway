@@ -70,6 +70,7 @@ func NewGateway(cfg *config.Config) *Gateway {
 	gw.translators[translatorKey{"anthropic", "chat"}] = &translator.AnthToChat{}
 	gw.translators[translatorKey{"anthropic", "responses"}] = &translator.AnthToRes{}
 	gw.translators[translatorKey{"chat", "anthropic"}] = &translator.ChatToAnth{}
+	gw.translators[translatorKey{"chat", "responses"}] = &translator.ChatToRes{}
 
 	return gw
 }
@@ -94,6 +95,50 @@ func (gw *Gateway) Start() error {
 	gw.health.Start(context.Background(), providers)
 
 	return nil
+}
+
+// ServeCompact forwards POST /v1/responses/compact to the upstream provider.
+func (gw *Gateway) ServeCompact(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	modelName := extractModel(body, translator.FormatResponses)
+	if modelName == "" {
+		http.Error(w, "model not found in request", http.StatusBadRequest)
+		return
+	}
+
+	model, _, ok := gw.resolver.Resolve(modelName)
+	if !ok {
+		http.Error(w, fmt.Sprintf("model %q not configured", modelName), http.StatusNotFound)
+		return
+	}
+
+	prov, _, err := gw.selector.Select(model, "")
+	if err != nil || prov.Endpoints.Responses == "" {
+		http.Error(w, "compact not supported by this provider", http.StatusNotImplemented)
+		return
+	}
+
+	apiKey := gw.cfg.ProviderAPIKey(prov)
+
+	// Forward the compact request body as-is to upstream.
+	resp, err := gw.client.Call(r.Context(), prov.Endpoints.Responses, "/responses/compact",
+		apiKey, body, map[string]string{"Content-Type": "application/json"})
+	if err != nil {
+		http.Error(w, "compact upstream error: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(respBody)
 }
 
 func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request, apiFormat translator.APIFormat) {
@@ -404,6 +449,9 @@ func isStreamRequest(body []byte) bool {
 func (gw *Gateway) resolveTranslator(apiFormat translator.APIFormat, prov *config.Provider) (translator.Translator, string) {
 	switch apiFormat {
 	case translator.FormatResponses:
+		if prov.Endpoints.Responses != "" {
+			return &translator.PassthroughTranslator{}, "/responses"
+		}
 		if prov.Endpoints.Anthropic != "" {
 			return gw.translators[translatorKey{"responses", "anthropic"}], "/messages"
 		}
@@ -422,7 +470,12 @@ func (gw *Gateway) resolveTranslator(apiFormat translator.APIFormat, prov *confi
 		if prov.Endpoints.Chat != "" {
 			return &translator.PassthroughTranslator{}, "/chat/completions"
 		}
-		return gw.translators[translatorKey{"chat", "anthropic"}], "/messages"
+		if prov.Endpoints.Anthropic != "" {
+			return gw.translators[translatorKey{"chat", "anthropic"}], "/messages"
+		}
+		if prov.Endpoints.Responses != "" {
+			return gw.translators[translatorKey{"chat", "responses"}], "/responses"
+		}
 	}
 	return nil, ""
 }
