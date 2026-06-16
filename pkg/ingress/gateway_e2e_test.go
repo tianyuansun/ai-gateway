@@ -2,12 +2,14 @@ package ingress
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/tianyuansun/ai-gateway/pkg/config"
+	chat "github.com/tianyuansun/ai-gateway/pkg/schema/chat"
 )
 
 func TestE2E_RoutesToHealthyProvider(t *testing.T) {
@@ -315,5 +317,217 @@ func TestE2E_AnthToResTranslatorRegistered(t *testing.T) {
 	}
 	if !strings.Contains(bodyStr, "Hello from responses") {
 		t.Error("expected 'Hello from responses' in response body")
+	}
+}
+
+func TestE2E_ResponsesAPI_InstructionsForwardedAsSystemMessage(t *testing.T) {
+	var upstreamBody []byte
+
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = body
+		r.Body.Close()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"Handoff summary: task complete."},"index":0}]}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			w.Write([]byte(chunk + "\n\n"))
+			flusher.Flush()
+		}
+	}))
+	defer upstreamServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: "127.0.0.1:0"},
+		Providers: map[string]config.Provider{
+			"p1": {Endpoints: config.ProviderEndpoints{Chat: upstreamServer.URL}},
+		},
+		Models: map[string]config.Model{
+			"test-model": {
+				Routing: &config.RoutingConfig{Strategy: "priority"},
+				Providers: []config.ModelProvider{
+					{Provider: "p1", Priority: 1},
+				},
+			},
+		},
+	}
+
+	gw := NewGateway(cfg)
+	gw.health.SetHealth("p1", true)
+
+	body := `{"model":"test-model","instructions":"You are a summarizer. Produce a handoff summary.","input":[{"type":"message","role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	gw.ServeResponses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var chatReq chat.ChatCompletionRequest
+	if err := json.Unmarshal(upstreamBody, &chatReq); err != nil {
+		t.Fatalf("failed to unmarshal upstream body as Chat request: %v\nBody: %s", err, string(upstreamBody))
+	}
+
+	if len(chatReq.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages (system + user), got %d", len(chatReq.Messages))
+	}
+
+	msg0 := chatReq.Messages[0]
+	if msg0.Role != "system" {
+		t.Errorf("expected first message role 'system', got %q", msg0.Role)
+	}
+	if msg0.Content == nil || msg0.Content.String == nil {
+		t.Fatal("expected first message to have string content")
+	}
+	if *msg0.Content.String != "You are a summarizer. Produce a handoff summary." {
+		t.Errorf("expected instructions text, got %q", *msg0.Content.String)
+	}
+}
+
+func TestE2E_ResponsesAPI_NoInstructions_NoSystemMessageUpstream(t *testing.T) {
+	var upstreamBody []byte
+
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = body
+		r.Body.Close()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		w.Write([]byte(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"ok"},"index":0}]}` + "\n\n"))
+		flusher.Flush()
+		w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}))
+	defer upstreamServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: "127.0.0.1:0"},
+		Providers: map[string]config.Provider{
+			"p1": {Endpoints: config.ProviderEndpoints{Chat: upstreamServer.URL}},
+		},
+		Models: map[string]config.Model{
+			"test-model": {
+				Routing: &config.RoutingConfig{Strategy: "priority"},
+				Providers: []config.ModelProvider{
+					{Provider: "p1", Priority: 1},
+				},
+			},
+		},
+	}
+
+	gw := NewGateway(cfg)
+	gw.health.SetHealth("p1", true)
+
+	body := `{"model":"test-model","input":[{"type":"message","role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	gw.ServeResponses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var chatReq chat.ChatCompletionRequest
+	if err := json.Unmarshal(upstreamBody, &chatReq); err != nil {
+		t.Fatalf("failed to unmarshal upstream body: %v", err)
+	}
+
+	for _, msg := range chatReq.Messages {
+		if msg.Role == "system" {
+			t.Error("expected no system message when instructions is absent")
+		}
+	}
+}
+
+func TestE2E_ResponsesAPI_CompactSimulation(t *testing.T) {
+	var upstreamBody []byte
+
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = body
+		r.Body.Close()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"summary: project is a REST API"},"index":0}]}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			w.Write([]byte(chunk + "\n\n"))
+			flusher.Flush()
+		}
+	}))
+	defer upstreamServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: "127.0.0.1:0"},
+		Providers: map[string]config.Provider{
+			"p1": {Endpoints: config.ProviderEndpoints{Chat: upstreamServer.URL}},
+		},
+		Models: map[string]config.Model{
+			"test-model": {
+				Routing: &config.RoutingConfig{Strategy: "priority"},
+				Providers: []config.ModelProvider{
+					{Provider: "p1", Priority: 1},
+				},
+			},
+		},
+	}
+
+	gw := NewGateway(cfg)
+	gw.health.SetHealth("p1", true)
+
+	// Simulate a local compact request: instructions + multi-item conversation input.
+	body := `{"model":"test-model","instructions":"You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary.","input":[{"type":"message","role":"user","content":"write a REST API"},{"type":"message","role":"assistant","content":"I will build it with Go."},{"type":"message","role":"user","content":"add tests"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	gw.ServeResponses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var chatReq chat.ChatCompletionRequest
+	if err := json.Unmarshal(upstreamBody, &chatReq); err != nil {
+		t.Fatalf("failed to unmarshal upstream body: %v", err)
+	}
+
+	if len(chatReq.Messages) < 4 {
+		t.Fatalf("expected at least 4 messages (system + 3 conversation), got %d", len(chatReq.Messages))
+	}
+
+	msg0 := chatReq.Messages[0]
+	if msg0.Role != "system" {
+		t.Errorf("expected first message role 'system', got %q", msg0.Role)
+	}
+	if msg0.Content == nil || msg0.Content.String == nil {
+		t.Fatal("expected first message to have string content")
+	}
+	if !strings.Contains(*msg0.Content.String, "CONTEXT CHECKPOINT COMPACTION") {
+		t.Errorf("expected summarization prompt in system message, got %q", *msg0.Content.String)
+	}
+
+	// Conversation messages should follow in order.
+	if chatReq.Messages[1].Role != "user" {
+		t.Errorf("expected msg[1] role 'user', got %q", chatReq.Messages[1].Role)
+	}
+	if chatReq.Messages[2].Role != "assistant" {
+		t.Errorf("expected msg[2] role 'assistant', got %q", chatReq.Messages[2].Role)
+	}
+	if chatReq.Messages[3].Role != "user" {
+		t.Errorf("expected msg[3] role 'user', got %q", chatReq.Messages[3].Role)
 	}
 }
