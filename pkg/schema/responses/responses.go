@@ -100,6 +100,10 @@ type ResponseInputItem struct {
 	ID string `json:"id,omitempty"`
 	// Status is for message items that originate from a prior response output.
 	Status string `json:"status,omitempty"`
+	// Summary is for reasoning items: array of summary_text blocks containing the visible reasoning.
+	Summary json.RawMessage `json:"summary,omitempty"`
+	// EncryptedContent is for server-encrypted reasoning items (opaque, passed through for passthrough).
+	EncryptedContent string `json:"encrypted_content,omitempty"`
 }
 
 // =============================================================================
