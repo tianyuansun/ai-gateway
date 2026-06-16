@@ -3,7 +3,6 @@ package translator
 import (
 	"context"
 	"io"
-	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
@@ -17,10 +16,10 @@ const (
 )
 
 type Request struct {
-	Model      string
-	APIFormat  APIFormat
-	Body       []byte
-	Headers    map[string]string
+	Model       string
+	APIFormat   APIFormat
+	Body        []byte
+	Headers     map[string]string
 	QueryParams map[string]string
 }
 
@@ -46,6 +45,4 @@ type Response struct {
 type Translator interface {
 	TranslateRequest(ctx context.Context, req *Request, s *session.Session) (*UpstreamRequest, error)
 	TranslateStream(ctx context.Context, upstream io.Reader, req *Request, s *session.Session) <-chan SSEEvent
-	TranslateResponse(ctx context.Context, upstream *http.Response, req *Request, s *session.Session) (*Response, error)
-	UpdateSession(s *session.Session, req *Request, resp *Response)
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/schema/anthropic"
 	"github.com/tianyuansun/ai-gateway/pkg/schema/chat"
@@ -86,9 +85,9 @@ func (t *AnthToChat) TranslateRequest(_ context.Context, req *Request, s *sessio
 
 	chatBody, _ := json.Marshal(chatReq)
 	return &UpstreamRequest{
-		Method: "POST",
-		URL:    "/chat/completions",
-		Body:   chatBody,
+		Method:  "POST",
+		URL:     "/chat/completions",
+		Body:    chatBody,
 		Headers: map[string]string{"Content-Type": "application/json"},
 	}, nil
 }
@@ -158,25 +157,6 @@ func (t *AnthToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *R
 	return ch
 }
 
-func (t *AnthToChat) TranslateResponse(_ context.Context, upstream *http.Response, _ *Request, _ *session.Session) (*Response, error) {
-	body, err := io.ReadAll(upstream.Body)
-	if err != nil {
-		return nil, err
-	}
-	upstream.Body.Close()
-
-	var chatResp chat.ChatCompletion
-	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return nil, err
-	}
-
-	reasoningContent := extractReasoningContent(body)
-
-	anthResp := t.convertToAnthropic(&chatResp)
-	respBody, _ := json.Marshal(anthResp)
-	return &Response{StatusCode: 200, Body: respBody, ReasoningContent: reasoningContent}, nil
-}
-
 func (t *AnthToChat) convertToAnthropic(chatResp *chat.ChatCompletion) *anthropic.MessageResponse {
 	var content []anthropic.ResponseContentBlock
 	msg := chatResp.Choices[0].Message
@@ -202,13 +182,5 @@ func (t *AnthToChat) convertToAnthropic(chatResp *chat.ChatCompletion) *anthropi
 			InputTokens:  chatResp.Usage.PromptTokens,
 			OutputTokens: chatResp.Usage.CompletionTokens,
 		},
-	}
-}
-
-func (t *AnthToChat) UpdateSession(s *session.Session, _ *Request, resp *Response) {
-	if resp.ReasoningContent != "" {
-		s.ReasoningRecords = append(s.ReasoningRecords, session.Reasoning{
-			Content: resp.ReasoningContent,
-		})
 	}
 }

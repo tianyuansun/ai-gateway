@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/schema/anthropic"
 	"github.com/tianyuansun/ai-gateway/pkg/schema/responses"
@@ -168,7 +167,7 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 	ch := make(chan SSEEvent)
 	go func() {
 		defer close(ch)
-			seq := int64(0)
+		seq := int64(0)
 		started := false
 		completed := false
 		itemStarted := false
@@ -183,7 +182,7 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 						InputTokens int `json:"input_tokens"`
 					} `json:"usage"`
 				} `json:"message"`
-				Index       int `json:"index"`
+				Index        int `json:"index"`
 				ContentBlock struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
@@ -281,9 +280,9 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 						"type":         "response.output_item.done",
 						"output_index": 0,
 						"item": map[string]any{
-							"id": responseID + "_item",
-							"type": "message",
-							"role": "assistant",
+							"id":     responseID + "_item",
+							"type":   "message",
+							"role":   "assistant",
 							"status": "completed",
 						},
 					})
@@ -312,31 +311,6 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 	return ch
 }
 
-func (t *ResToAnth) TranslateResponse(_ context.Context, upstream *http.Response, _ *Request, _ *session.Session) (*Response, error) {
-	body, err := io.ReadAll(upstream.Body)
-	if err != nil {
-		return nil, err
-	}
-	upstream.Body.Close()
-
-	var anthResp anthropic.MessageResponse
-	if err := json.Unmarshal(body, &anthResp); err != nil {
-		return nil, err
-	}
-
-	reasoningContent := ""
-	for _, c := range anthResp.Content {
-		if c.Type == "thinking" && c.Thinking != "" {
-			reasoningContent += c.Thinking
-		}
-	}
-
-	resp := t.convertToResponse(&anthResp)
-
-	respBody, _ := json.Marshal(resp)
-	return &Response{StatusCode: 200, Body: respBody, ReasoningContent: reasoningContent}, nil
-}
-
 func (t *ResToAnth) convertToResponse(anthResp *anthropic.MessageResponse) *responses.Response {
 	output := []responses.ResponseOutputItem{}
 
@@ -344,8 +318,8 @@ func (t *ResToAnth) convertToResponse(anthResp *anthropic.MessageResponse) *resp
 		switch c.Type {
 		case "text":
 			output = append(output, responses.ResponseOutputItem{
-				Type: "message",
-				Role: "assistant",
+				Type:    "message",
+				Role:    "assistant",
 				Content: []responses.ResponseContentPart{{Type: "output_text", Text: c.Text}},
 			})
 		case "tool_use":
@@ -401,12 +375,4 @@ func extractInputText(content json.RawMessage) string {
 		return text
 	}
 	return ""
-}
-
-func (t *ResToAnth) UpdateSession(s *session.Session, _ *Request, resp *Response) {
-	if resp.ReasoningContent != "" {
-		s.ReasoningRecords = append(s.ReasoningRecords, session.Reasoning{
-			Content: resp.ReasoningContent,
-		})
-	}
 }

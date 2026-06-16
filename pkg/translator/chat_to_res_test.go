@@ -1,17 +1,13 @@
 package translator
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
-	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/tianyuansun/ai-gateway/pkg/schema/chat"
 	"github.com/tianyuansun/ai-gateway/pkg/schema/responses"
-	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
 
 func chatRequest(t *testing.T, model string, messages []chat.ChatCompletionMessage) []byte {
@@ -246,171 +242,6 @@ func TestChatToRes_TranslateRequest_AssistantToolCalls(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Cycle 2: TranslateResponse tests
-// ---------------------------------------------------------------------------
-
-func TestChatToRes_TranslateResponse_TextMessage(t *testing.T) {
-	responsesBody, _ := json.Marshal(responses.Response{
-		ID:     "resp_1",
-		Object: "response",
-		Model:  "gpt-4o",
-		Output: []responses.ResponseOutputItem{
-			{
-				Type: "message",
-				Role: "assistant",
-				Content: []responses.ResponseContentPart{
-					{Type: "output_text", Text: "Hello from responses"},
-				},
-			},
-		},
-		Usage: &responses.ResponseUsage{
-			InputTokens:  10,
-			OutputTokens: 5,
-			TotalTokens:  15,
-		},
-	})
-
-	httpResp := &http.Response{
-		StatusCode: 200,
-		Body:       io.NopCloser(bytes.NewReader(responsesBody)),
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-	}
-
-	tr := &ChatToRes{}
-	req := &Request{Model: "gpt-4o", APIFormat: FormatChat}
-	result, err := tr.TranslateResponse(context.Background(), httpResp, req, nil)
-	if err != nil {
-		t.Fatalf("TranslateResponse: %v", err)
-	}
-	if result.StatusCode != 200 {
-		t.Errorf("expected status 200, got %d", result.StatusCode)
-	}
-
-	var chatResp chat.ChatCompletion
-	if err := json.Unmarshal(result.Body, &chatResp); err != nil {
-		t.Fatalf("unmarshal chat response: %v", err)
-	}
-
-	if chatResp.ID != "resp_1" {
-		t.Errorf("expected id 'resp_1', got %q", chatResp.ID)
-	}
-	if len(chatResp.Choices) != 1 {
-		t.Fatalf("expected 1 choice, got %d", len(chatResp.Choices))
-	}
-	if chatResp.Choices[0].Message.Content == nil || chatResp.Choices[0].Message.Content.String == nil {
-		t.Fatal("expected content")
-	}
-	if *chatResp.Choices[0].Message.Content.String != "Hello from responses" {
-		t.Errorf("expected 'Hello from responses', got %q", *chatResp.Choices[0].Message.Content.String)
-	}
-	if chatResp.Usage == nil || chatResp.Usage.TotalTokens != 15 {
-		t.Errorf("expected total_tokens 15, got %+v", chatResp.Usage)
-	}
-}
-
-func TestChatToRes_TranslateResponse_FunctionCall(t *testing.T) {
-	responsesBody, _ := json.Marshal(responses.Response{
-		ID:     "resp_2",
-		Object: "response",
-		Model:  "gpt-4o",
-		Output: []responses.ResponseOutputItem{
-			{
-				Type:      "function_call",
-				CallID:    "fc_1",
-				Name:      "get_weather",
-				Arguments: `{"city":"NYC"}`,
-			},
-		},
-	})
-
-	httpResp := &http.Response{
-		StatusCode: 200,
-		Body:       io.NopCloser(bytes.NewReader(responsesBody)),
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-	}
-
-	tr := &ChatToRes{}
-	result, err := tr.TranslateResponse(context.Background(), httpResp, nil, nil)
-	if err != nil {
-		t.Fatalf("TranslateResponse: %v", err)
-	}
-
-	var chatResp chat.ChatCompletion
-	if err := json.Unmarshal(result.Body, &chatResp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	msg := chatResp.Choices[0].Message
-	if len(msg.ToolCalls) != 1 {
-		t.Fatalf("expected 1 tool call, got %d", len(msg.ToolCalls))
-	}
-	if msg.ToolCalls[0].ID != "fc_1" {
-		t.Errorf("expected tool call id 'fc_1', got %q", msg.ToolCalls[0].ID)
-	}
-	if msg.ToolCalls[0].Function.Name != "get_weather" {
-		t.Errorf("expected function name 'get_weather', got %q", msg.ToolCalls[0].Function.Name)
-	}
-	if msg.ToolCalls[0].Function.Arguments != `{"city":"NYC"}` {
-		t.Errorf("expected arguments, got %q", msg.ToolCalls[0].Function.Arguments)
-	}
-}
-
-func TestChatToRes_TranslateResponse_SessionUpdate(t *testing.T) {
-	s := &session.Session{ID: "sess-1"}
-	responsesBody, _ := json.Marshal(responses.Response{
-		ID:     "resp_3",
-		Object: "response",
-		Model:  "gpt-4o",
-		Output: []responses.ResponseOutputItem{
-			{
-				Type: "message",
-				Role: "assistant",
-				Content: []responses.ResponseContentPart{
-					{Type: "output_text", Text: "session text"},
-				},
-			},
-		},
-	})
-
-	httpResp := &http.Response{
-		StatusCode: 200,
-		Body:       io.NopCloser(bytes.NewReader(responsesBody)),
-		Header:     http.Header{"Content-Type": []string{"application/json"}},
-	}
-
-	tr := &ChatToRes{}
-	_, err := tr.TranslateResponse(context.Background(), httpResp, nil, s)
-	if err != nil {
-		t.Fatalf("TranslateResponse: %v", err)
-	}
-
-	if len(s.Messages) != 1 {
-		t.Fatalf("expected 1 session message, got %d", len(s.Messages))
-	}
-	if s.Messages[0].Role != "assistant" {
-		t.Errorf("expected role assistant, got %q", s.Messages[0].Role)
-	}
-	if s.Messages[0].Content != "session text" {
-		t.Errorf("expected 'session text', got %q", s.Messages[0].Content)
-	}
-}
-
-func TestChatToRes_UpdateSession_Reasoning(t *testing.T) {
-	tr := &ChatToRes{}
-	s := &session.Session{ID: "sess-1"}
-	// Simulate a response with reasoning content from extractReasoningFromResponse.
-	resp := &Response{
-		StatusCode:       200,
-		Body:             []byte(`{}`),
-		ReasoningContent: "Let me think... step by step.",
-	}
-	tr.UpdateSession(s, nil, resp)
-	if len(s.ReasoningRecords) != 1 {
-		t.Fatalf("expected 1 reasoning record, got %d", len(s.ReasoningRecords))
-	}
-	if s.ReasoningRecords[0].Content != "Let me think... step by step." {
-		t.Errorf("expected reasoning content, got %q", s.ReasoningRecords[0].Content)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Cycle 3: TranslateStream test
@@ -581,25 +412,6 @@ func TestChatToRes_TranslateStream_EmptyStream(t *testing.T) {
 		t.Errorf("expected 0 events for empty stream, got %d", len(events))
 	}
 }
-
-func TestChatToRes_TranslateResponse_EmptyBody(t *testing.T) {
-	tr := &ChatToRes{}
-	httpResp := &http.Response{
-		StatusCode: 200,
-		Body:       io.NopCloser(bytes.NewReader([]byte{})),
-	}
-	_, err := tr.TranslateResponse(context.Background(), httpResp, nil, nil)
-	if err == nil {
-		t.Error("expected error for empty body")
-	}
-}
-
-func TestChatToRes_UpdateSession_NoReasoning(t *testing.T) {
-	tr := &ChatToRes{}
-	s := &session.Session{ID: "sess-1"}
-	resp := &Response{StatusCode: 200, Body: []byte(`{}`), ReasoningContent: ""}
-	tr.UpdateSession(s, nil, resp)
-	if len(s.ReasoningRecords) != 0 {
-		t.Errorf("expected 0 reasoning records, got %d", len(s.ReasoningRecords))
-	}
+func strPtr(s string) *string {
+	return &s
 }
