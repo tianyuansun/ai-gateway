@@ -481,7 +481,6 @@ func TestResToChat_NilSession_EmptySessionMessages(t *testing.T) {
 	// Session exists but has no messages — should fall back to body items.
 	tr := &ResToChat{}
 	s := &session.Session{
-		Messages: []session.Message{}, // empty
 	}
 	body := `{"model": "gpt-4", "input": [{"type": "message", "role": "user", "content": "hello from body"}]}`
 	req := &Request{
@@ -503,7 +502,6 @@ func TestResToAnth_NilSession_EmptySessionMessages(t *testing.T) {
 	// Session exists but has no messages — should fall back to body items.
 	tr := &ResToAnth{}
 	s := &session.Session{
-		Messages: []session.Message{},
 	}
 	body := `{"model": "ds-pro", "input": [{"type": "message", "role": "user", "content": "hello from body"}]}`
 	req := &Request{

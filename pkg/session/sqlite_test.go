@@ -17,16 +17,9 @@ func TestSQLiteStore_SetGet(t *testing.T) {
 	}
 
 	sess := &Session{
-		ID:        "sess-1",
-		ModelName: "test-model",
+		ID:         "sess-1",
+		ModelName:  "test-model",
 		ProviderID: "p1",
-		Messages: []Message{
-			{Role: "user", Content: "hello"},
-			{Role: "assistant", Content: "hi there"},
-		},
-		ReasoningRecords: []Reasoning{
-			{Content: "let me think..."},
-		},
 	}
 
 	if err := store.Set("sess-1", sess); err != nil {
