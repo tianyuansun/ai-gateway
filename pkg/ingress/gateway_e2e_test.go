@@ -531,3 +531,59 @@ func TestE2E_ResponsesAPI_CompactSimulation(t *testing.T) {
 		t.Errorf("expected msg[3] role 'user', got %q", chatReq.Messages[3].Role)
 	}
 }
+
+func TestE2E_ResponsesAPI_ReasoningStream(t *testing.T) {
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"reasoning_content":"Let me think."},"index":0}]}`,
+			`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"Answer"},"index":0}]}`,
+			`data: [DONE]`,
+		}
+		for _, chunk := range chunks {
+			w.Write([]byte(chunk + "\n\n"))
+			flusher.Flush()
+		}
+	}))
+	defer upstreamServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: "127.0.0.1:0"},
+		Providers: map[string]config.Provider{
+			"p1": {Endpoints: config.ProviderEndpoints{Chat: upstreamServer.URL}},
+		},
+		Models: map[string]config.Model{
+			"test-model": {
+				Routing: &config.RoutingConfig{Strategy: "priority"},
+				Providers: []config.ModelProvider{
+					{Provider: "p1", Priority: 1},
+				},
+			},
+		},
+	}
+
+	gw := NewGateway(cfg)
+	gw.health.SetHealth("p1", true)
+
+	body := `{"model":"test-model","stream":true,"input":[{"type":"message","role":"user","content":"think hard"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	gw.ServeResponses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if !strings.Contains(rec.Body.String(), "reasoning_summary_text.delta") {
+		t.Error("expected reasoning_summary_text.delta in response")
+	}
+	if !strings.Contains(rec.Body.String(), "Let me think.") {
+		t.Error("expected reasoning text in response")
+	}
+	if !strings.Contains(rec.Body.String(), "output_text.delta") {
+		t.Error("expected output_text.delta in response")
+	}
+}
