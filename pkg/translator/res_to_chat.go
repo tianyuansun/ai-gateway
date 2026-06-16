@@ -23,6 +23,15 @@ func (t *ResToChat) TranslateRequest(_ context.Context, req *Request, s *session
 
 	messages := t.rebuildMessages(s, &body)
 
+	// Forward instructions as the first system message.
+	// This is used by Codex CLI local compact to inject a summarization prompt.
+	if body.Instructions != nil && *body.Instructions != "" {
+		messages = append([]chat.ChatCompletionMessage{{
+			Role:    "system",
+			Content: &chat.ChatCompletionMessageContent{String: body.Instructions},
+		}}, messages...)
+	}
+
 	chatReq := chat.ChatCompletionRequest{
 		Model:    req.Model,
 		Messages: messages,

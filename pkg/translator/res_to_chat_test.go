@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/tianyuansun/ai-gateway/pkg/schema/chat"
+	"github.com/tianyuansun/ai-gateway/pkg/session"
 )
 
 func TestResToChat_TranslateStream(t *testing.T) {
@@ -60,4 +63,148 @@ func TestResToChat_TranslateStream(t *testing.T) {
 	if last.Event != "response.completed" {
 		t.Errorf("last event: expected 'response.completed', got %q", last.Event)
 	}
+}
+
+func TestResToChat_TranslateRequest_PrependsInstructionsAsSystemMessage(t *testing.T) {
+	tr := &ResToChat{}
+
+	body := json.RawMessage(`{
+		"model": "test-model",
+		"instructions": "You are a summarizer. Produce a handoff summary.",
+		"input": [
+			{"type": "message", "role": "user", "content": "hello"}
+		]
+	}`)
+
+	req := &Request{Body: body, Model: "test-model"}
+	upstream, err := tr.TranslateRequest(context.Background(), req, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var chatReq chat.ChatCompletionRequest
+	if err := json.Unmarshal(upstream.Body, &chatReq); err != nil {
+		t.Fatalf("failed to unmarshal upstream body: %v", err)
+	}
+
+	if len(chatReq.Messages) < 2 {
+		t.Fatalf("expected at least 2 messages (system + user), got %d", len(chatReq.Messages))
+	}
+
+	msg0 := chatReq.Messages[0]
+	if msg0.Role != "system" {
+		t.Errorf("expected first message role 'system', got %q", msg0.Role)
+	}
+	if msg0.Content == nil || msg0.Content.String == nil {
+		t.Fatal("expected first message to have string content")
+	}
+	if *msg0.Content.String != "You are a summarizer. Produce a handoff summary." {
+		t.Errorf("expected instructions text, got %q", *msg0.Content.String)
+	}
+}
+
+func TestResToChat_TranslateRequest_NoInstructions_NoSystemMessage(t *testing.T) {
+	tr := &ResToChat{}
+
+	body := json.RawMessage(`{
+		"model": "test-model",
+		"input": [
+			{"type": "message", "role": "user", "content": "hello"}
+		]
+	}`)
+
+	req := &Request{Body: body, Model: "test-model"}
+	upstream, err := tr.TranslateRequest(context.Background(), req, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var chatReq chat.ChatCompletionRequest
+	if err := json.Unmarshal(upstream.Body, &chatReq); err != nil {
+		t.Fatalf("failed to unmarshal upstream body: %v", err)
+	}
+
+	for _, msg := range chatReq.Messages {
+		if msg.Role == "system" {
+			t.Error("expected no system message when instructions is absent")
+		}
+	}
+}
+
+func TestResToChat_TranslateRequest_InstructionsWithSession(t *testing.T) {
+	tr := &ResToChat{}
+
+	s := &session.Session{
+		Messages: []session.Message{
+			{Role: "user", Content: "previous turn"},
+			{Role: "assistant", Content: "previous response"},
+		},
+	}
+
+	body := json.RawMessage(`{
+		"model": "test-model",
+		"instructions": "summarize please"
+	}`)
+
+	req := &Request{Body: body, Model: "test-model"}
+	upstream, err := tr.TranslateRequest(context.Background(), req, s)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var chatReq chat.ChatCompletionRequest
+	if err := json.Unmarshal(upstream.Body, &chatReq); err != nil {
+		t.Fatalf("failed to unmarshal upstream body: %v", err)
+	}
+
+	if len(chatReq.Messages) < 3 {
+		t.Fatalf("expected at least 3 messages (system + 2 session), got %d", len(chatReq.Messages))
+	}
+
+	msg0 := chatReq.Messages[0]
+	if msg0.Role != "system" {
+		t.Errorf("expected first message role 'system', got %q", msg0.Role)
+	}
+	if msg0.Content == nil || msg0.Content.String == nil {
+		t.Fatal("expected first message to have string content")
+	}
+	if *msg0.Content.String != "summarize please" {
+		t.Errorf("expected instructions text 'summarize please', got %q", *msg0.Content.String)
+	}
+
+	// Session messages should follow.
+	if chatReq.Messages[1].Role != "user" || chatReq.Messages[1].Content.String == nil || *chatReq.Messages[1].Content.String != "previous turn" {
+		t.Error("expected session user message after system message")
+	}
+}
+
+func TestResToChat_UpdateSession_DoesNotPersistInstructions(t *testing.T) {
+	tr := &ResToChat{}
+
+	s := &session.Session{
+		Messages: []session.Message{
+			{Role: "user", Content: "hello"},
+		},
+	}
+
+	body := json.RawMessage(`{
+		"model": "test-model",
+		"instructions": "should not be persisted"
+	}`)
+
+	req := &Request{Body: body, Model: "test-model"}
+	upstream, err := tr.TranslateRequest(context.Background(), req, s)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// UpdateSession should not add instructions to session.
+	resp := &Response{StatusCode: 200, Body: []byte(`{}`)}
+	tr.UpdateSession(s, req, resp)
+
+	// Session message count should be unchanged (no new message for instructions).
+	if len(s.Messages) != 1 {
+		t.Errorf("expected 1 session message, got %d", len(s.Messages))
+	}
+	_ = upstream
 }
