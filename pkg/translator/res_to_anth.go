@@ -117,6 +117,7 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 		started := false
 		completed := false
 		itemStarted := false
+		thinkingStarted := false
 		var responseID string
 		for sseEv := range shared.ParseSSE(upstream) {
 			var event struct {
@@ -136,6 +137,7 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 				Delta struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
+					Thinking string `json:"thinking"`
 				} `json:"delta"`
 				Usage struct {
 					OutputTokens int `json:"output_tokens"`
@@ -194,6 +196,34 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 				}
 
 			case "content_block_delta":
+				if event.Delta.Type == "thinking_delta" && event.Delta.Thinking != "" {
+					if !thinkingStarted {
+						thinkingStarted = true
+						reasoningItem, _ := evt(&seq, map[string]any{
+							"type":         "response.output_item.added",
+							"output_index": 1,
+							"item": map[string]any{
+								"id": responseID + "_reasoning", "type": "reasoning", "status": "in_progress",
+							},
+						})
+						ch <- SSEEvent{Event: "response.output_item.added", Data: reasoningItem}
+						summaryPart, _ := evt(&seq, map[string]any{
+							"type":          "response.reasoning_summary_part.added",
+							"item_id":       responseID + "_reasoning",
+							"output_index":  1,
+							"summary_index": 0,
+						})
+						ch <- SSEEvent{Event: "response.reasoning_summary_part.added", Data: summaryPart}
+					}
+					reasoningDelta, _ := evt(&seq, map[string]any{
+						"type":          "response.reasoning_summary_text.delta",
+						"item_id":       responseID + "_reasoning",
+						"output_index":  1,
+						"summary_index": 0,
+						"delta":         event.Delta.Thinking,
+					})
+					ch <- SSEEvent{Event: "response.reasoning_summary_text.delta", Data: reasoningDelta}
+				}
 				if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
 					deltaData, _ := evt(&seq, map[string]any{
 						"type":          "response.output_text.delta",
@@ -221,6 +251,23 @@ func (t *ResToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 				}
 
 			case "message_stop":
+				if thinkingStarted {
+					reasoningDone, _ := evt(&seq, map[string]any{
+						"type":          "response.reasoning_summary_part.done",
+						"item_id":       responseID + "_reasoning",
+						"output_index":  1,
+						"summary_index": 0,
+					})
+					ch <- SSEEvent{Event: "response.reasoning_summary_part.done", Data: reasoningDone}
+					reasoningItemDone, _ := evt(&seq, map[string]any{
+						"type":         "response.output_item.done",
+						"output_index": 1,
+						"item": map[string]any{
+							"id": responseID + "_reasoning", "type": "reasoning", "status": "completed",
+						},
+					})
+					ch <- SSEEvent{Event: "response.output_item.done", Data: reasoningItemDone}
+				}
 				if itemStarted {
 					itemDone, _ := evt(&seq, map[string]any{
 						"type":         "response.output_item.done",
