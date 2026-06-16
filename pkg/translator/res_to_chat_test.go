@@ -177,34 +177,3 @@ func TestResToChat_TranslateRequest_InstructionsWithSession(t *testing.T) {
 		t.Error("expected session user message after system message")
 	}
 }
-
-func TestResToChat_UpdateSession_DoesNotPersistInstructions(t *testing.T) {
-	tr := &ResToChat{}
-
-	s := &session.Session{
-		Messages: []session.Message{
-			{Role: "user", Content: "hello"},
-		},
-	}
-
-	body := json.RawMessage(`{
-		"model": "test-model",
-		"instructions": "should not be persisted"
-	}`)
-
-	req := &Request{Body: body, Model: "test-model"}
-	upstream, err := tr.TranslateRequest(context.Background(), req, s)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// UpdateSession should not add instructions to session.
-	resp := &Response{StatusCode: 200, Body: []byte(`{}`)}
-	tr.UpdateSession(s, req, resp)
-
-	// Session message count should be unchanged (no new message for instructions).
-	if len(s.Messages) != 1 {
-		t.Errorf("expected 1 session message, got %d", len(s.Messages))
-	}
-	_ = upstream
-}

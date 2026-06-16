@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/schema/anthropic"
 	"github.com/tianyuansun/ai-gateway/pkg/schema/responses"
@@ -116,33 +115,6 @@ func (t *AnthToRes) buildResponseRequest(anthReq *anthropic.MessageRequest, mode
 	}
 
 	return resReq
-}
-
-func (t *AnthToRes) TranslateResponse(_ context.Context, upstream *http.Response, _ *Request, _ *session.Session) (*Response, error) {
-	body, err := io.ReadAll(upstream.Body)
-	if err != nil {
-		return nil, err
-	}
-	upstream.Body.Close()
-
-	var resResp responses.Response
-	if err := json.Unmarshal(body, &resResp); err != nil {
-		return nil, err
-	}
-
-	reasoningContent := t.extractReasoning(&resResp)
-	anthResp := t.convertToAnthropicResponse(&resResp)
-
-	anthBody, err := json.Marshal(anthResp)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Response{
-		StatusCode:       200,
-		Body:             anthBody,
-		ReasoningContent: reasoningContent,
-	}, nil
 }
 
 func (t *AnthToRes) extractReasoning(resResp *responses.Response) string {
@@ -306,12 +278,4 @@ func (t *AnthToRes) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 		}
 	}()
 	return ch
-}
-
-func (t *AnthToRes) UpdateSession(s *session.Session, _ *Request, resp *Response) {
-	if resp.ReasoningContent != "" {
-		s.ReasoningRecords = append(s.ReasoningRecords, session.Reasoning{
-			Content: resp.ReasoningContent,
-		})
-	}
 }

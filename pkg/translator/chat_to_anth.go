@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/schema/anthropic"
 	"github.com/tianyuansun/ai-gateway/pkg/schema/chat"
@@ -83,9 +82,9 @@ func (t *ChatToAnth) TranslateRequest(_ context.Context, req *Request, s *sessio
 
 	anthBody, _ := json.Marshal(anthReq)
 	return &UpstreamRequest{
-		Method: "POST",
-		URL:    "/messages",
-		Body:   anthBody,
+		Method:  "POST",
+		URL:     "/messages",
+		Body:    anthBody,
 		Headers: map[string]string{"Content-Type": "application/json"},
 	}, nil
 }
@@ -137,73 +136,10 @@ func (t *ChatToAnth) TranslateStream(_ context.Context, upstream io.Reader, _ *R
 	return ch
 }
 
-func (t *ChatToAnth) TranslateResponse(_ context.Context, upstream *http.Response, _ *Request, _ *session.Session) (*Response, error) {
-	body, err := io.ReadAll(upstream.Body)
-	if err != nil {
-		return nil, err
-	}
-	upstream.Body.Close()
-
-	var anthResp anthropic.MessageResponse
-	if err := json.Unmarshal(body, &anthResp); err != nil {
-		return nil, err
-	}
-
-	reasoningContent := ""
-	for _, c := range anthResp.Content {
-		if c.Type == "thinking" && c.Thinking != "" {
-			reasoningContent += c.Thinking
-		}
-	}
-
-	msg := chat.ChatCompletionMessage{Role: "assistant"}
-	var msgContent string
-	for _, c := range anthResp.Content {
-		switch c.Type {
-		case "text":
-			msgContent = c.Text
-		case "tool_use":
-			args, _ := json.Marshal(c.Input)
-			msg.ToolCalls = append(msg.ToolCalls, chat.ChatCompletionMessageToolCall{
-				ID:   c.ID,
-				Type: "function",
-				Function: chat.ChatCompletionToolCallFunction{
-					Name:      c.Name,
-					Arguments: string(args),
-				},
-			})
-		}
-	}
-	if msgContent != "" {
-		msg.Content = &chat.ChatCompletionMessageContent{String: &msgContent}
-	}
-
-	chatResp := &chat.ChatCompletion{
-		ID:     anthResp.ID,
-		Object: "chat.completion",
-		Choices: []chat.ChatCompletionChoice{{Index: 0, Message: msg}},
-		Usage: &chat.CompletionUsage{
-			PromptTokens:     anthResp.Usage.InputTokens,
-			CompletionTokens: anthResp.Usage.OutputTokens,
-			TotalTokens:      anthResp.Usage.InputTokens + anthResp.Usage.OutputTokens,
-		},
-	}
-	respBody, _ := json.Marshal(chatResp)
-	return &Response{StatusCode: 200, Body: respBody, ReasoningContent: reasoningContent}, nil
-}
-
 // contentString extracts a plain string from ChatCompletionMessageContent.
 func contentString(c *chat.ChatCompletionMessageContent) string {
 	if c == nil || c.String == nil {
 		return ""
 	}
 	return *c.String
-}
-
-func (t *ChatToAnth) UpdateSession(s *session.Session, _ *Request, resp *Response) {
-	if resp.ReasoningContent != "" {
-		s.ReasoningRecords = append(s.ReasoningRecords, session.Reasoning{
-			Content: resp.ReasoningContent,
-		})
-	}
 }

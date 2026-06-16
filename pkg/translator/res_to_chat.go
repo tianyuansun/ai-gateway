@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/schema/chat"
 	"github.com/tianyuansun/ai-gateway/pkg/schema/responses"
@@ -145,7 +144,7 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 	ch := make(chan SSEEvent)
 	go func() {
 		defer close(ch)
-			seq := int64(0)
+		seq := int64(0)
 		started := false
 		completed := false
 		itemStarted := false
@@ -273,30 +272,6 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 	return ch
 }
 
-func (t *ResToChat) TranslateResponse(_ context.Context, upstream *http.Response, _ *Request, s *session.Session) (*Response, error) {
-	body, err := io.ReadAll(upstream.Body)
-	if err != nil {
-		return nil, err
-	}
-	upstream.Body.Close()
-
-	var chatResp chat.ChatCompletion
-	if err := json.Unmarshal(body, &chatResp); err != nil {
-		return nil, err
-	}
-
-	reasoningContent := extractReasoningContent(body)
-
-	resp := t.convertToResponse(&chatResp)
-
-	if s != nil {
-		t.appendToSession(s, &chatResp)
-	}
-
-	respBody, _ := json.Marshal(resp)
-	return &Response{StatusCode: 200, Body: respBody, ReasoningContent: reasoningContent}, nil
-}
-
 func (t *ResToChat) convertToResponse(chatResp *chat.ChatCompletion) *responses.Response {
 	msg := chatResp.Choices[0].Message
 
@@ -358,14 +333,6 @@ func (t *ResToChat) appendToSession(s *session.Session, chatResp *chat.ChatCompl
 				Function: session.FunctionCall{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
 			}
 		}
-	}
-}
-
-func (t *ResToChat) UpdateSession(s *session.Session, _ *Request, resp *Response) {
-	if resp.ReasoningContent != "" {
-		s.ReasoningRecords = append(s.ReasoningRecords, session.Reasoning{
-			Content: resp.ReasoningContent,
-		})
 	}
 }
 

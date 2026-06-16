@@ -3,7 +3,6 @@ package translator
 import (
 	"context"
 	"io"
-	"net/http"
 
 	"github.com/tianyuansun/ai-gateway/pkg/session"
 	"github.com/tianyuansun/ai-gateway/pkg/shared"
@@ -35,14 +34,3 @@ func (p *PassthroughTranslator) TranslateStream(_ context.Context, upstream io.R
 	}()
 	return ch
 }
-
-func (p *PassthroughTranslator) TranslateResponse(_ context.Context, upstream *http.Response, _ *Request, _ *session.Session) (*Response, error) {
-	body, err := io.ReadAll(upstream.Body)
-	if err != nil {
-		return nil, err
-	}
-	upstream.Body.Close()
-	return &Response{StatusCode: upstream.StatusCode, Body: body}, nil
-}
-
-func (p *PassthroughTranslator) UpdateSession(_ *session.Session, _ *Request, _ *Response) {}

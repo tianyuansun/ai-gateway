@@ -1,10 +1,7 @@
 package translator
 
 import (
-	"bytes"
 	"context"
-	"io"
-	"net/http"
 	"strings"
 	"testing"
 
@@ -95,19 +92,6 @@ func TestResToAnth_TranslateStream_EmptyUpstream(t *testing.T) {
 
 	if len(events) != 0 {
 		t.Errorf("expected 0 events from empty upstream, got %d", len(events))
-	}
-}
-
-func TestResToAnth_TranslateResponse_EmptyUpstream(t *testing.T) {
-	tr := &ResToAnth{}
-	httpResp := &http.Response{
-		StatusCode: 200,
-		Body:       io.NopCloser(bytes.NewReader([]byte{})),
-	}
-
-	_, err := tr.TranslateResponse(context.Background(), httpResp, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for empty upstream body in TranslateResponse, got nil")
 	}
 }
 
@@ -215,19 +199,6 @@ func TestResToChat_TranslateStream_EmptyUpstream(t *testing.T) {
 	}
 }
 
-func TestResToChat_TranslateResponse_EmptyUpstream(t *testing.T) {
-	tr := &ResToChat{}
-	httpResp := &http.Response{
-		StatusCode: 200,
-		Body:       io.NopCloser(bytes.NewReader([]byte{})),
-	}
-
-	_, err := tr.TranslateResponse(context.Background(), httpResp, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for empty upstream body in TranslateResponse, got nil")
-	}
-}
-
 // =============================================================================
 // AnthToChat edge-case tests
 // =============================================================================
@@ -332,19 +303,6 @@ func TestAnthToChat_TranslateStream_EmptyUpstream(t *testing.T) {
 
 	if len(events) != 0 {
 		t.Errorf("expected 0 events from empty upstream, got %d", len(events))
-	}
-}
-
-func TestAnthToChat_TranslateResponse_EmptyUpstream(t *testing.T) {
-	tr := &AnthToChat{}
-	httpResp := &http.Response{
-		StatusCode: 200,
-		Body:       io.NopCloser(bytes.NewReader([]byte{})),
-	}
-
-	_, err := tr.TranslateResponse(context.Background(), httpResp, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for empty upstream body in TranslateResponse, got nil")
 	}
 }
 
@@ -456,19 +414,6 @@ func TestChatToAnth_TranslateStream_EmptyUpstream(t *testing.T) {
 	}
 }
 
-func TestChatToAnth_TranslateResponse_EmptyUpstream(t *testing.T) {
-	tr := &ChatToAnth{}
-	httpResp := &http.Response{
-		StatusCode: 200,
-		Body:       io.NopCloser(bytes.NewReader([]byte{})),
-	}
-
-	_, err := tr.TranslateResponse(context.Background(), httpResp, nil, nil)
-	if err == nil {
-		t.Fatal("expected error for empty upstream body in TranslateResponse, got nil")
-	}
-}
-
 // =============================================================================
 // PassthroughTranslator edge-case tests
 // =============================================================================
@@ -525,25 +470,6 @@ func TestPassthroughTranslator_TranslateStream_EmptyUpstream(t *testing.T) {
 
 	if len(events) != 0 {
 		t.Errorf("expected 0 events from empty upstream, got %d", len(events))
-	}
-}
-
-func TestPassthroughTranslator_TranslateResponse_EmptyUpstream(t *testing.T) {
-	pt := &PassthroughTranslator{}
-	httpResp := &http.Response{
-		StatusCode: 200,
-		Body:       io.NopCloser(bytes.NewReader([]byte{})),
-	}
-
-	resp, err := pt.TranslateResponse(context.Background(), httpResp, nil, nil)
-	if err != nil {
-		t.Fatalf("passthrough TranslateResponse should not error on empty body: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("expected non-nil response")
-	}
-	if len(resp.Body) != 0 {
-		t.Errorf("expected empty response body, got %d bytes", len(resp.Body))
 	}
 }
 
