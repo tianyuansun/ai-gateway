@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 
 	"github.com/tianyuansun/ai-gateway/pkg/schema/chat"
 	"github.com/tianyuansun/ai-gateway/pkg/schema/responses"
@@ -97,9 +98,39 @@ func (t *ResToChat) rebuildMessages(s *session.Session, body *responses.Response
 				ToolCallID: item.CallID,
 				Content:    &chat.ChatCompletionMessageContent{String: &item.Output},
 			})
+		case "reasoning":
+			summary := extractReasoningSummary(item.Summary)
+			if summary != "" {
+				for j := len(msgs) - 1; j >= 0; j-- {
+					if msgs[j].Role == "assistant" {
+						msgs[j].ReasoningContent = summary
+						break
+					}
+				}
+			}
 		}
 	}
 	return msgs
+}
+
+func extractReasoningSummary(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "summary_text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 
