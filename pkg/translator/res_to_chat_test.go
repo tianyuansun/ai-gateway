@@ -169,3 +169,40 @@ func TestResToChat_TranslateRequest_IgnoresSessionMessages(t *testing.T) {
 	}
 }
 
+
+func TestResToChat_TranslateStream_ReasoningContent(t *testing.T) {
+	sseStream := strings.Join([]string{
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant","reasoning_content":"Let me think about this."},"index":0}]}`,
+		``,
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"Answer is 42"},"index":0}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	tr := &ResToChat{}
+	ch := tr.TranslateStream(context.Background(), strings.NewReader(sseStream), nil, nil)
+
+	var events []SSEEvent
+	for ev := range ch {
+		events = append(events, ev)
+	}
+
+	var reasoningDeltas []string
+	for _, ev := range events {
+		if ev.Event == "response.reasoning_summary_text.delta" {
+			var delta struct {
+				Delta string `json:"delta"`
+			}
+			if err := json.Unmarshal(ev.Data, &delta); err == nil {
+				reasoningDeltas = append(reasoningDeltas, delta.Delta)
+			}
+		}
+	}
+	if len(reasoningDeltas) == 0 {
+		t.Error("expected reasoning_summary_text.delta events, got none")
+	}
+	if len(reasoningDeltas) > 0 && reasoningDeltas[0] != "Let me think about this." {
+		t.Errorf("expected reasoning delta 'Let me think about this.', got %q", reasoningDeltas[0])
+	}
+}
