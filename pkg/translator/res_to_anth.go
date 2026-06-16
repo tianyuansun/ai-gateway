@@ -80,6 +80,19 @@ func (t *ResToAnth) buildMessages(s *session.Session, body *responses.ResponseRe
 					Content:   item.Output,
 				}},
 			})
+	case "reasoning":
+		summary := extractReasoningSummary(item.Summary)
+		if summary != "" {
+			for j := len(req.Messages) - 1; j >= 0; j-- {
+				if req.Messages[j].Role == "assistant" {
+					req.Messages[j].Content = append(
+						[]anthropic.ContentBlockParam{{Type: "thinking", Thinking: summary}},
+						req.Messages[j].Content...,
+					)
+					break
+				}
+			}
+		}
 	}
 	}
 
