@@ -587,3 +587,65 @@ func TestE2E_ResponsesAPI_ReasoningStream(t *testing.T) {
 		t.Error("expected output_text.delta in response")
 	}
 }
+
+func TestE2E_ResponsesAPI_ReasoningItemInRequest(t *testing.T) {
+	var upstreamBody []byte
+
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = body
+		r.Body.Close()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(`data: [DONE]` + "\n\n"))
+	}))
+	defer upstreamServer.Close()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Listen: "127.0.0.1:0"},
+		Providers: map[string]config.Provider{
+			"p1": {Endpoints: config.ProviderEndpoints{Chat: upstreamServer.URL}},
+		},
+		Models: map[string]config.Model{
+			"test-model": {
+				Routing: &config.RoutingConfig{Strategy: "priority"},
+				Providers: []config.ModelProvider{
+					{Provider: "p1", Priority: 1},
+				},
+			},
+		},
+	}
+
+	gw := NewGateway(cfg)
+	gw.health.SetHealth("p1", true)
+
+	body := `{"model":"test-model","stream":true,"input":[{"type":"message","role":"user","content":"hello"},{"type":"message","role":"assistant","content":"I will help"},{"type":"reasoning","summary":[{"type":"summary_text","text":"Let me think about this carefully."}]}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	gw.ServeResponses(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var chatReq chat.ChatCompletionRequest
+	if err := json.Unmarshal(upstreamBody, &chatReq); err != nil {
+		t.Fatalf("unmarshal upstream: %v", err)
+	}
+
+	// Find the assistant message and verify reasoning_content.
+	found := false
+	for _, msg := range chatReq.Messages {
+		if msg.Role == "assistant" && msg.ReasoningContent != "" {
+			if !strings.Contains(msg.ReasoningContent, "Let me think about this") {
+				t.Errorf("expected reasoning content, got %q", msg.ReasoningContent)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected assistant message with reasoning_content")
+	}
+}
