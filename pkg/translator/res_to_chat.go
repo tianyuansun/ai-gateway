@@ -111,9 +111,27 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 		started := false
 		completed := false
 		itemStarted := false
+		reasoningStarted := false
 		var responseID string
 		for sseEv := range shared.ParseSSE(upstream) {
 			if sseEv.Data == "[DONE]" {
+				if reasoningStarted {
+					reasoningDone, _ := evt(&seq, map[string]any{
+						"type":          "response.reasoning_summary_part.done",
+						"item_id":       responseID + "_reasoning",
+						"output_index":  1,
+						"summary_index": 0,
+					})
+					ch <- SSEEvent{Event: "response.reasoning_summary_part.done", Data: reasoningDone}
+					reasoningItemDone, _ := evt(&seq, map[string]any{
+						"type":         "response.output_item.done",
+						"output_index": 1,
+						"item": map[string]any{
+							"id": responseID + "_reasoning", "type": "reasoning", "status": "completed",
+						},
+					})
+					ch <- SSEEvent{Event: "response.output_item.done", Data: reasoningItemDone}
+				}
 				if itemStarted {
 					itemDone, _ := evt(&seq, map[string]any{
 						"type":         "response.output_item.done",
@@ -139,8 +157,9 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 				ID      string `json:"id"`
 				Choices []struct {
 					Delta struct {
-						Role    string `json:"role"`
-						Content string `json:"content"`
+						Role             string `json:"role"`
+						Content          string `json:"content"`
+						ReasoningContent string `json:"reasoning_content"`
 					} `json:"delta"`
 					FinishReason *string `json:"finish_reason"`
 				} `json:"choices"`
@@ -171,6 +190,35 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 			}
 
 			for _, choice := range chunk.Choices {
+				// Reasoning content: emit reasoning SSE events.
+				if choice.Delta.ReasoningContent != "" {
+					if !reasoningStarted {
+						reasoningStarted = true
+						reasoningItem, _ := evt(&seq, map[string]any{
+							"type":         "response.output_item.added",
+							"output_index": 1,
+							"item": map[string]any{
+								"id": responseID + "_reasoning", "type": "reasoning", "status": "in_progress",
+							},
+						})
+						ch <- SSEEvent{Event: "response.output_item.added", Data: reasoningItem}
+						summaryPart, _ := evt(&seq, map[string]any{
+							"type":          "response.reasoning_summary_part.added",
+							"item_id":       responseID + "_reasoning",
+							"output_index":  1,
+							"summary_index": 0,
+						})
+						ch <- SSEEvent{Event: "response.reasoning_summary_part.added", Data: summaryPart}
+					}
+					reasoningDelta, _ := evt(&seq, map[string]any{
+						"type":          "response.reasoning_summary_text.delta",
+						"item_id":       responseID + "_reasoning",
+						"output_index":  1,
+						"summary_index": 0,
+						"delta":         choice.Delta.ReasoningContent,
+					})
+					ch <- SSEEvent{Event: "response.reasoning_summary_text.delta", Data: reasoningDelta}
+				}
 				if choice.Delta.Content != "" && !itemStarted {
 					itemStarted = true
 					itemData, _ := evt(&seq, map[string]any{
@@ -201,6 +249,23 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 					ch <- SSEEvent{Event: "response.output_text.delta", Data: deltaData}
 				}
 				if choice.FinishReason != nil {
+					if reasoningStarted {
+						reasoningDone, _ := evt(&seq, map[string]any{
+							"type":          "response.reasoning_summary_part.done",
+							"item_id":       responseID + "_reasoning",
+							"output_index":  1,
+							"summary_index": 0,
+						})
+						ch <- SSEEvent{Event: "response.reasoning_summary_part.done", Data: reasoningDone}
+						reasoningItemDone, _ := evt(&seq, map[string]any{
+							"type":         "response.output_item.done",
+							"output_index": 1,
+							"item": map[string]any{
+								"id": responseID + "_reasoning", "type": "reasoning", "status": "completed",
+							},
+						})
+						ch <- SSEEvent{Event: "response.output_item.done", Data: reasoningItemDone}
+					}
 					if itemStarted {
 						itemDone, _ := evt(&seq, map[string]any{
 							"type":         "response.output_item.done",
