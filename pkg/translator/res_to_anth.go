@@ -48,43 +48,39 @@ func (t *ResToAnth) buildMessages(s *session.Session, body *responses.ResponseRe
 		req.Thinking = &anthropic.ThinkingConfig{Type: "enabled", BudgetTokens: 16000}
 	}
 
-	// Rebuild full history from session when available (mirrors ResToChat pattern).
-	if s != nil && len(s.Messages) > 0 {
-		req.Messages = sessionToAnthropicMessagesWithReasoning(s.Messages, s.ReasoningRecords)
-	} else {
-		for _, item := range body.Input.Items {
-			switch item.Type {
-			case "message":
-				text := extractInputText(item.Content)
-				if item.Role == "system" || item.Role == "developer" {
-					req.System = &anthropic.SystemContent{String: &text}
-				} else {
-					req.Messages = append(req.Messages, anthropic.MessageParam{
-						Role:    item.Role,
-						Content: []anthropic.ContentBlockParam{{Type: "text", Text: text}},
-					})
-				}
-			case "function_call":
+	_ = s // session is used only for provider affinity, not message history
+	for _, item := range body.Input.Items {
+		switch item.Type {
+		case "message":
+			text := extractInputText(item.Content)
+			if item.Role == "system" || item.Role == "developer" {
+				req.System = &anthropic.SystemContent{String: &text}
+			} else {
 				req.Messages = append(req.Messages, anthropic.MessageParam{
-					Role: "assistant",
-					Content: []anthropic.ContentBlockParam{{
-						Type:  "tool_use",
-						ID:    item.CallID,
-						Name:  item.Name,
-						Input: json.RawMessage(item.Arguments),
-					}},
-				})
-			case "function_call_output":
-				req.Messages = append(req.Messages, anthropic.MessageParam{
-					Role: "user",
-					Content: []anthropic.ContentBlockParam{{
-						Type:      "tool_result",
-						ToolUseID: item.CallID,
-						Content:   item.Output,
-					}},
+					Role:    item.Role,
+					Content: []anthropic.ContentBlockParam{{Type: "text", Text: text}},
 				})
 			}
-		}
+		case "function_call":
+			req.Messages = append(req.Messages, anthropic.MessageParam{
+				Role: "assistant",
+				Content: []anthropic.ContentBlockParam{{
+					Type:  "tool_use",
+					ID:    item.CallID,
+					Name:  item.Name,
+					Input: json.RawMessage(item.Arguments),
+				}},
+			})
+		case "function_call_output":
+			req.Messages = append(req.Messages, anthropic.MessageParam{
+				Role: "user",
+				Content: []anthropic.ContentBlockParam{{
+					Type:      "tool_result",
+					ToolUseID: item.CallID,
+					Content:   item.Output,
+				}},
+			})
+	}
 	}
 
 	if len(body.Tools) > 0 {
@@ -104,56 +100,6 @@ func (t *ResToAnth) buildMessages(s *session.Session, body *responses.ResponseRe
 	return req
 }
 
-func sessionToAnthropicMessagesWithReasoning(msgs []session.Message, reasoningRecords []session.Reasoning) []anthropic.MessageParam {
-	var result []anthropic.MessageParam
-	for _, m := range msgs {
-		switch m.Role {
-		case "tool":
-			result = append(result, anthropic.MessageParam{
-				Role: "user",
-				Content: []anthropic.ContentBlockParam{{
-					Type:      "tool_result",
-					ToolUseID: m.ToolCallID,
-					Content:   m.Content,
-				}},
-			})
-		case "assistant":
-			var content []anthropic.ContentBlockParam
-			if m.Content != "" {
-				content = append(content, anthropic.ContentBlockParam{Type: "text", Text: m.Content})
-			}
-			for _, tc := range m.ToolCalls {
-				content = append(content, anthropic.ContentBlockParam{
-					Type:  "tool_use",
-					ID:    tc.ID,
-					Name:  tc.Function.Name,
-					Input: json.RawMessage(tc.Function.Arguments),
-				})
-			}
-			result = append(result, anthropic.MessageParam{Role: "assistant", Content: content})
-		default:
-			result = append(result, anthropic.MessageParam{
-				Role:    m.Role,
-				Content: []anthropic.ContentBlockParam{{Type: "text", Text: m.Content}},
-			})
-		}
-	}
-	// Inject reasoning as thinking blocks into the last assistant message.
-	if len(reasoningRecords) > 0 {
-		thinking := reasoningRecords[len(reasoningRecords)-1].Content
-		for i := len(result) - 1; i >= 0; i-- {
-			if result[i].Role == "assistant" {
-				thinkingBlock := anthropic.ContentBlockParam{
-					Type:     "thinking",
-					Thinking: thinking,
-				}
-				result[i].Content = append([]anthropic.ContentBlockParam{thinkingBlock}, result[i].Content...)
-				break
-			}
-		}
-	}
-	return result
-}
 
 // evt adds a monotonically increasing sequence number to an event map.
 func evt(seq *int64, m map[string]any) ([]byte, error) {

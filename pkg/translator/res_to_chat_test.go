@@ -131,19 +131,20 @@ func TestResToChat_TranslateRequest_NoInstructions_NoSystemMessage(t *testing.T)
 	}
 }
 
-func TestResToChat_TranslateRequest_InstructionsWithSession(t *testing.T) {
+func TestResToChat_TranslateRequest_IgnoresSessionMessages(t *testing.T) {
 	tr := &ResToChat{}
 
+	// Session has stale messages from a previous turn.
 	s := &session.Session{
-		Messages: []session.Message{
-			{Role: "user", Content: "previous turn"},
-			{Role: "assistant", Content: "previous response"},
-		},
+		
 	}
 
+	// Request body has different input items — this is the true source.
 	body := json.RawMessage(`{
 		"model": "test-model",
-		"instructions": "summarize please"
+		"input": [
+			{"type": "message", "role": "user", "content": "fresh request message"}
+		]
 	}`)
 
 	req := &Request{Body: body, Model: "test-model"}
@@ -157,23 +158,14 @@ func TestResToChat_TranslateRequest_InstructionsWithSession(t *testing.T) {
 		t.Fatalf("failed to unmarshal upstream body: %v", err)
 	}
 
-	if len(chatReq.Messages) < 3 {
-		t.Fatalf("expected at least 3 messages (system + 2 session), got %d", len(chatReq.Messages))
+	if len(chatReq.Messages) != 1 {
+		t.Fatalf("expected 1 message (from request body), got %d", len(chatReq.Messages))
 	}
-
-	msg0 := chatReq.Messages[0]
-	if msg0.Role != "system" {
-		t.Errorf("expected first message role 'system', got %q", msg0.Role)
+	if chatReq.Messages[0].Content == nil || chatReq.Messages[0].Content.String == nil {
+		t.Fatal("expected message content")
 	}
-	if msg0.Content == nil || msg0.Content.String == nil {
-		t.Fatal("expected first message to have string content")
-	}
-	if *msg0.Content.String != "summarize please" {
-		t.Errorf("expected instructions text 'summarize please', got %q", *msg0.Content.String)
-	}
-
-	// Session messages should follow.
-	if chatReq.Messages[1].Role != "user" || chatReq.Messages[1].Content.String == nil || *chatReq.Messages[1].Content.String != "previous turn" {
-		t.Error("expected session user message after system message")
+	if *chatReq.Messages[0].Content.String != "fresh request message" {
+		t.Errorf("expected 'fresh request message', got %q", *chatReq.Messages[0].Content.String)
 	}
 }
+

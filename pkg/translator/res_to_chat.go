@@ -69,10 +69,7 @@ func (t *ResToChat) TranslateRequest(_ context.Context, req *Request, s *session
 }
 
 func (t *ResToChat) rebuildMessages(s *session.Session, body *responses.ResponseRequest) []chat.ChatCompletionMessage {
-	if s != nil && len(s.Messages) > 0 {
-		return t.sessionMessages(s)
-	}
-
+	_ = s // session is used only for provider affinity, not message history
 	msgs := make([]chat.ChatCompletionMessage, 0, len(body.Input.Items))
 	for _, item := range body.Input.Items {
 		switch item.Type {
@@ -105,40 +102,6 @@ func (t *ResToChat) rebuildMessages(s *session.Session, body *responses.Response
 	return msgs
 }
 
-func (t *ResToChat) sessionMessages(s *session.Session) []chat.ChatCompletionMessage {
-	msgs := make([]chat.ChatCompletionMessage, len(s.Messages))
-	for i, m := range s.Messages {
-		msgs[i] = chat.ChatCompletionMessage{
-			Role:       m.Role,
-			Content:    &chat.ChatCompletionMessageContent{String: &m.Content},
-			ToolCallID: m.ToolCallID,
-			Name:       m.Name,
-		}
-		if len(m.ToolCalls) > 0 {
-			msgs[i].ToolCalls = make([]chat.ChatCompletionMessageToolCall, len(m.ToolCalls))
-			for j, tc := range m.ToolCalls {
-				msgs[i].ToolCalls[j] = chat.ChatCompletionMessageToolCall{
-					ID:   tc.ID,
-					Type: tc.Type,
-					Function: chat.ChatCompletionToolCallFunction{
-						Name:      tc.Function.Name,
-						Arguments: tc.Function.Arguments,
-					},
-				}
-			}
-		}
-	}
-	// Inject reasoning records into the last assistant message.
-	if len(s.ReasoningRecords) > 0 {
-		for i := len(msgs) - 1; i >= 0; i-- {
-			if msgs[i].Role == "assistant" {
-				msgs[i].ReasoningContent = s.ReasoningRecords[len(s.ReasoningRecords)-1].Content
-				break
-			}
-		}
-	}
-	return msgs
-}
 
 func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Request, _ *session.Session) <-chan SSEEvent {
 	ch := make(chan SSEEvent)
@@ -272,84 +235,7 @@ func (t *ResToChat) TranslateStream(_ context.Context, upstream io.Reader, _ *Re
 	return ch
 }
 
-func (t *ResToChat) convertToResponse(chatResp *chat.ChatCompletion) *responses.Response {
-	msg := chatResp.Choices[0].Message
 
-	output := []responses.ResponseOutputItem{}
-	if msg.Content != nil && msg.Content.String != nil {
-		output = append(output, responses.ResponseOutputItem{
-			Type: "message",
-			Role: "assistant",
-			Content: []responses.ResponseContentPart{{
-				Type: "output_text",
-				Text: *msg.Content.String,
-			}},
-		})
-	}
-	for _, tc := range msg.ToolCalls {
-		output = append(output, responses.ResponseOutputItem{
-			Type:      "function_call",
-			CallID:    tc.ID,
-			Name:      tc.Function.Name,
-			Arguments: tc.Function.Arguments,
-		})
-	}
 
-	return &responses.Response{
-		ID:     chatResp.ID,
-		Object: "response",
-		Output: output,
-		Usage:  t.convertUsage(chatResp.Usage),
-	}
-}
-
-func (t *ResToChat) convertUsage(u *chat.CompletionUsage) *responses.ResponseUsage {
-	if u == nil {
-		return nil
-	}
-	return &responses.ResponseUsage{
-		InputTokens:  u.PromptTokens,
-		OutputTokens: u.CompletionTokens,
-		TotalTokens:  u.TotalTokens,
-	}
-}
-
-func (t *ResToChat) appendToSession(s *session.Session, chatResp *chat.ChatCompletion) {
-	msg := chatResp.Choices[0].Message
-	s.Messages = append(s.Messages, session.Message{
-		Role: "assistant",
-	})
-	last := &s.Messages[len(s.Messages)-1]
-	if msg.Content != nil && msg.Content.String != nil {
-		last.Content = *msg.Content.String
-	}
-	if len(msg.ToolCalls) > 0 {
-		last.Content = ""
-		last.ToolCalls = make([]session.ToolCall, len(msg.ToolCalls))
-		for i, tc := range msg.ToolCalls {
-			last.ToolCalls[i] = session.ToolCall{
-				ID:       tc.ID,
-				Type:     tc.Type,
-				Function: session.FunctionCall{Name: tc.Function.Name, Arguments: tc.Function.Arguments},
-			}
-		}
-	}
-}
 
 // extractReasoningContent extracts reasoning_content from a Chat Completions response.
-func extractReasoningContent(body []byte) string {
-	var raw struct {
-		Choices []struct {
-			Message struct {
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return ""
-	}
-	if len(raw.Choices) > 0 {
-		return raw.Choices[0].Message.ReasoningContent
-	}
-	return ""
-}

@@ -174,25 +174,6 @@ func (t *ChatToRes) convertUsage(u *responses.ResponseUsage) *chat.CompletionUsa
 	}
 }
 
-func (t *ChatToRes) appendToSession(s *session.Session, resp *responses.Response) {
-	last := session.Message{Role: "assistant"}
-	for _, item := range resp.Output {
-		switch item.Type {
-		case "message":
-			last.Content = extractOutputText(item.Content)
-		case "function_call":
-			last.ToolCalls = append(last.ToolCalls, session.ToolCall{
-				ID:   item.CallID,
-				Type: "function",
-				Function: session.FunctionCall{
-					Name:      item.Name,
-					Arguments: item.Arguments,
-				},
-			})
-		}
-	}
-	s.Messages = append(s.Messages, last)
-}
 
 func (t *ChatToRes) extractReasoningFromResponse(resp *responses.Response) string {
 	for _, item := range resp.Output {
